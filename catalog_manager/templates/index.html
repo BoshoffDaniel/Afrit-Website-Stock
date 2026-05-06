@@ -1,74 +1,98 @@
 {% extends "base.html" %}
-{% block title %}Dashboard - Catalog Manager{% endblock %}
+{% block title %}Catalog Manager{% endblock %}
 {% block content %}
+<header class="dash-head">
+  <div class="dash-brand"><span class="k-accent"></span><h1>Catalog Manager</h1></div>
+  <div class="dash-actions">
+    <a class="btn btn-blue" href="{{ url_for('create_product') }}">+ Add Product</a>
+    <a class="btn btn-light" href="{{ url_for('settings_page') }}">⚙ Settings</a>
+    <button class="btn btn-green" id="pushAllBtn" {% if not configured %}disabled{% endif %}>Push all done products</button>
+    <a class="btn btn-light" href="/help">Help</a>
+  </div>
+</header>
+
 <section class="stats-grid">
-  <article class="stat-card"><div class="stat-value">{{ stats.total }}</div><div class="stat-label">Total</div></article>
-  <article class="stat-card"><div class="stat-value">{{ stats.done }}</div><div class="stat-label">Done</div></article>
-  <article class="stat-card"><div class="stat-value">{{ stats.pending }}</div><div class="stat-label">Pending</div></article>
-  <article class="stat-card"><div class="stat-value">{{ stats.percent }}%</div><div class="stat-label">% Complete</div></article>
+  <article class="stat-card blue"><div class="stat-value">{{ stats.total }}</div><div class="stat-label">Total Products</div></article>
+  <article class="stat-card green"><div class="stat-value">{{ stats.done }}</div><div class="stat-label">Done</div></article>
+  <article class="stat-card orange"><div class="stat-value">{{ stats.pending }}</div><div class="stat-label">Pending</div></article>
+  <article class="stat-card purple"><div class="stat-value">{{ stats.percent }}%</div><div class="stat-label">% Complete</div></article>
 </section>
 
 <section class="progress-wrap">
+  <div class="progress-meta">{{ stats.done }} of {{ target_total }} products complete</div>
   <div class="progress-bar"><div class="progress-fill" style="width: {{ stats.percent }}%"></div></div>
 </section>
 
 <section class="shopify-bar {% if configured %}ok{% else %}warn{% endif %}">
   {% if configured %}
-    <span>Shopify connected — {{ stats.pushed }} products pushed, {{ ready_to_push }} ready to push</span>
-    <button class="btn btn-green" id="pushAllBtn">Push all done products</button>
+    Shopify connected — {{ stats.pushed }} pushed, {{ ready_to_push }} ready to push
   {% else %}
-    <span>Shopify not connected — go to Settings to connect</span>
-    <a class="btn btn-light" href="{{ url_for('settings_page') }}">Open Settings</a>
+    Shopify not connected — add API key in Settings
   {% endif %}
 </section>
 
 <section id="batchPushProgress" class="progress-wrap hidden">
-  <div class="progress-bar"><div class="progress-fill" id="batchPushBar" style="width: 0%"></div></div>
+  <div class="progress-bar"><div class="progress-fill" id="batchPushBar" style="width:0%"></div></div>
   <small id="batchPushText"></small>
 </section>
 
 <section class="filters">
-  <input type="text" id="searchInput" placeholder="Search stock code, name, category...">
-  <select id="categoryFilter">
-    <option value="">All Categories</option>
-    {% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}
-  </select>
-  <select id="statusFilter">
-    <option value="">All</option>
-    <option value="pending">Pending</option>
-    <option value="done">Done</option>
-    <option value="pushed">Pushed to Shopify</option>
-  </select>
+  <input type="text" id="searchInput" placeholder="🔍 Search stock code, name, category...">
+  <div class="filter-group">
+    <label class="filter-label" for="categoryFilter">Category:</label>
+    <select id="categoryFilter">
+      <option value="">All Categories</option>
+      {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label class="filter-label" for="statusFilter">Status:</label>
+    <select id="statusFilter">
+      <option value="">All Products</option>
+      <option value="pending">Pending only</option>
+      <option value="done">Done only</option>
+      <option value="pushed">Pushed to Shopify</option>
+    </select>
+  </div>
 </section>
+<div class="results-count">
+  Showing <span id="resultsCount">{{ shown_count }}</span> products
+  (<span id="resultsDone">{{ stats.done }}</span> done, <span id="resultsPending">{{ stats.pending }}</span> pending)
+</div>
 
 <section class="table-wrap">
   <table id="productsTable">
     <thead>
       <tr>
-        <th>Stock Code</th><th>Name</th><th>Category</th><th>Photos</th><th>Status</th><th>Shopify</th><th>Open</th>
+        <th>Photo</th><th>Stock Code</th><th>Name</th><th>Category</th><th>Photos</th><th>Status</th><th>Shopify</th><th>Open</th>
       </tr>
     </thead>
     <tbody>
       {% for p in products %}
-      <tr class="{% if p.status == 'pending' %}pending-row{% elif p.shopify_pushed %}pushed-row{% endif %}"
+      <tr class="{% if p.status == 'pending' %}pending-row{% else %}done-row{% endif %} {% if p.shopify_pushed %}pushed-row{% endif %}"
           data-stock="{{ p.stock_code|lower }}"
           data-name="{{ p.name|lower }}"
           data-category="{{ p.category|lower }}"
           data-status="{{ p.status }}"
           data-pushed="{{ p.shopify_pushed }}">
-        <td>{{ p.stock_code }}</td>
+        <td>
+          <a href="/product/{{ p.id }}" class="dash-thumb-link">
+            {% if p.photos and p.photos|length > 0 %}
+              <img class="dash-thumb" src="{{ url_for('static', filename='uploads/' ~ p.photos[0]) }}" alt="">
+            {% else %}
+              <div class="dash-thumb placeholder">📷</div>
+            {% endif %}
+          </a>
+        </td>
+        <td class="mono strong">{{ p.stock_code }}</td>
         <td>{{ p.name }}</td>
         <td>{{ p.category }}</td>
         <td>{{ p.photo_count }}</td>
-        <td><span class="badge badge-{{ p.status }}">{{ p.status }}</span></td>
+        <td><span class="badge badge-{{ p.status }}">{{ p.status|upper }}</span></td>
         <td>
-          {% if p.shopify_pushed %}
-            <span class="shopify-dot green" title="Pushed"></span>
-          {% elif p.shopify_id %}
-            <span class="shopify-dot orange" title="Needs re-push"></span>
-          {% else %}
-            <span class="shopify-dot grey" title="Not pushed"></span>
-          {% endif %}
+          {% if p.shopify_pushed %}<span class="shopify-dot green"></span>
+          {% elif p.shopify_id %}<span class="shopify-dot orange"></span>
+          {% else %}<span class="shopify-dot grey"></span>{% endif %}
         </td>
         <td><a class="btn btn-small btn-green open-btn" href="/product/{{ p.id }}">Open</a></td>
       </tr>
@@ -76,10 +100,7 @@
     </tbody>
   </table>
 </section>
-{% endblock %}
 
-{% block scripts %}
-<script>
-  initDashboard();
-</script>
+<footer class="app-footer">Catalog Manager by Kodexa · Version 1.0.0</footer>
 {% endblock %}
+{% block scripts %}<script>initDashboard();</script>{% endblock %}

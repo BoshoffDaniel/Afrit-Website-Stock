@@ -1,7 +1,8 @@
 # Catalog Manager
 
 ## Setup (first time only)
-1. pip install flask pillow openpyxl
+1. pip install flask pillow openpyxl requests rembg
+   - Note: `rembg` downloads a ~170MB model on first use (one time only).
 2. python import_excel.py your_spreadsheet.xlsx
 3. python app.py
 4. Open browser: http://localhost:5001

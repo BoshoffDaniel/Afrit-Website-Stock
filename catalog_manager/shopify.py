@@ -54,7 +54,7 @@ def upload_image_to_shopify(product_id, image_path, alt_text):
 
 def _variant_payload(product_dict):
     return {
-        "sku": product_dict["stock_code"],
+        "sku": product_dict.get("shopify_sku") or product_dict["stock_code"],
         "price": str(product_dict["sell_price"] if product_dict["sell_price"] is not None else ""),
         "compare_at_price": (
             str(product_dict["compare_price"]) if product_dict["compare_price"] not in (None, "") else None

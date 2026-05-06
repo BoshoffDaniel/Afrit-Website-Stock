@@ -1,36 +1,42 @@
 {% extends "base.html" %}
 {% block title %}Settings - Catalog Manager{% endblock %}
 {% block content %}
+<a href="/" class="back-dashboard-btn">← Back to Dashboard</a>
 <section class="panel settings-panel">
   <h2>Shopify Connection</h2>
-  <div class="form-field">
-    <label>Store URL</label>
-    <input type="text" id="shopify_store_url" placeholder="yourstore.myshopify.com" value="{{ shopify_store_url }}">
-  </div>
+  <div class="form-field"><label>Store URL</label><input type="text" id="shopify_store_url" placeholder="yourstore.myshopify.com" value="{{ shopify_store_url }}"></div>
   <div class="form-field">
     <label>API Key</label>
-    <div class="row-2">
-      <input type="password" id="shopify_api_key" value="{{ shopify_api_key }}">
-      <button class="btn btn-light" id="toggleApiKeyBtn" type="button">Show/Hide</button>
-    </div>
+    <div class="row-2"><input type="password" id="shopify_api_key" value="{{ shopify_api_key }}"><button class="btn btn-light" id="toggleApiKeyBtn" type="button">Show/Hide</button></div>
   </div>
-  <button id="saveSettingsBtn" class="btn btn-green">Save & Test Connection</button>
+  <div class="row-2">
+    <button id="saveSettingsBtn" class="btn btn-green">Save Settings</button>
+    <button id="testShopifyBtn" class="btn btn-light">Test Shopify Connection</button>
+  </div>
   <p id="settingsStatus" class="save-status"></p>
-  <p class="sub">
-    To get your API key: Shopify Admin → Settings → Apps → Develop apps → Create app → Configure Admin API →
-    enable write_products and read_products → Install → Reveal token
-  </p>
+</section>
+
+<section class="panel settings-panel">
+  <h2>AI Description</h2>
+  <div class="form-field">
+    <label>Groq API Key</label>
+    <div class="row-2"><input type="password" id="groq_api_key" value="{{ groq_api_key }}"><button class="btn btn-light" id="toggleGroqKeyBtn" type="button">Show/Hide</button></div>
+  </div>
+  <div class="sub">Model: llama-3.3-70b-versatile</div>
+  <div class="sub">Get your API key at console.groq.com</div>
+  <div class="status-pill {% if groq_api_key %}ready{% else %}off{% endif %}" id="groqStatus">{% if groq_api_key %}Ready{% else %}Not configured{% endif %}</div>
+</section>
+
+<section class="panel settings-panel">
+  <h2>Background Removal</h2>
+  <div class="sub">Background removal model: Click to download (170MB, one time only)</div>
+  <button id="downloadRembgBtn" class="btn btn-light">Download model now</button>
+  <p id="rembgStatus" class="save-status"></p>
 </section>
 
 <section class="panel settings-panel">
   <h2>App Settings</h2>
-  <div class="form-field">
-    <label>Total products target</label>
-    <input type="number" id="products_total_target" value="{{ products_total_target }}">
-  </div>
+  <div class="form-field"><label>Total products target</label><input type="number" id="products_total_target" value="{{ products_total_target }}"></div>
 </section>
 {% endblock %}
-
-{% block scripts %}
-<script>initSettingsPage();</script>
-{% endblock %}
+{% block scripts %}<script>initSettingsPage();</script>{% endblock %}

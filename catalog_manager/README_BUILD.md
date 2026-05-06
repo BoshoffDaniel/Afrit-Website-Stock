@@ -1,7 +1,7 @@
 # Build Instructions
 
 ## Dev setup
-pip install flask pillow openpyxl requests pyinstaller pystray
+pip install flask pillow openpyxl requests rembg pyinstaller pystray
 
 ## Build exe
 1. Run build.bat

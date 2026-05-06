@@ -31,6 +31,7 @@ def init_db():
             status TEXT DEFAULT 'pending',
             notes TEXT,
             shopify_handle TEXT,
+            shopify_sku TEXT,
             shopify_id TEXT,
             shopify_pushed INTEGER DEFAULT 0,
             shopify_pushed_at TIMESTAMP,
@@ -50,6 +51,7 @@ def init_db():
     cur.execute("PRAGMA table_info(products)")
     existing_columns = {row[1] for row in cur.fetchall()}
     migrations = [
+        ("shopify_sku", "ALTER TABLE products ADD COLUMN shopify_sku TEXT"),
         ("shopify_id", "ALTER TABLE products ADD COLUMN shopify_id TEXT"),
         ("shopify_pushed", "ALTER TABLE products ADD COLUMN shopify_pushed INTEGER DEFAULT 0"),
         ("shopify_pushed_at", "ALTER TABLE products ADD COLUMN shopify_pushed_at TIMESTAMP"),
@@ -60,6 +62,7 @@ def init_db():
     default_settings = {
         "shopify_store_url": "",
         "shopify_api_key": "",
+        "groq_api_key": "",
         "products_total_target": "2036",
     }
     for key, value in default_settings.items():

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Add Product - Catalog Manager{% endblock %}
+{% block content %}
+<section class="panel settings-panel">
+  <h2>Add New Product</h2>
+  <p class="sub">Create a product manually by entering the core details.</p>
+
+  {% if error %}
+    <div class="save-status error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('create_product') }}" class="setup-form">
+    <div class="form-field">
+      <label for="stock_code">Stock Code</label>
+      <input id="stock_code" name="stock_code" type="text" required value="{{ form_data.stock_code if form_data else '' }}">
+    </div>
+    <div class="form-field">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" required value="{{ form_data.name if form_data else '' }}">
+    </div>
+    <div class="form-field">
+      <label for="category">Category</label>
+      <select id="category" name="category" required>
+        <option value="">Select category</option>
+        {% for c in categories %}
+          <option value="{{ c }}" {% if form_data and form_data.category == c %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="row-2 form-actions">
+      <a class="btn btn-red" href="{{ url_for('index') }}">Cancel</a>
+      <button class="btn btn-green" type="submit">Create Product</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

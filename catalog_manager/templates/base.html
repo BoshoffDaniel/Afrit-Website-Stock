@@ -9,9 +9,6 @@
 <body>
   <header class="top-nav">
     <a class="brand" href="{{ url_for('index') }}">Catalog Manager</a>
-    <nav class="top-links">
-      <a class="btn btn-light" href="{{ url_for('settings_page') }}">Settings</a>
-    </nav>
   </header>
   <main class="page">
     {% block content %}{% endblock %}

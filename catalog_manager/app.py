@@ -1,15 +1,18 @@
 import json
 import os
 import re
+import sqlite3
 import shutil
 import threading
 import traceback
 from datetime import datetime
 
+import requests
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 from PIL import Image
 
 from database import get_conn, get_setting, init_db, set_setting
+from image_utils import process_photo
 from import_excel import import_excel
 from shopify import push_product, test_connection
 
@@ -32,7 +35,7 @@ UPLOAD_DIR = os.path.join(DATA_DIR, "static", "uploads")
 INBOX_DIR = os.path.join(DATA_DIR, "camera_inbox")
 EXPORT_DIR = os.path.join(DATA_DIR, "exports")
 ALLOWED_INBOX_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".cr2", ".nef", ".arw", ".dng"}
-
+PHOTO_STATUS = {}
 PUSH_PROGRESS = {"running": False, "total": 0, "pushed": 0, "failed": 0, "current": ""}
 
 
@@ -70,6 +73,19 @@ def resize_to_jpeg(source_path, target_path, max_side=2048):
         image.save(target_path, "JPEG", quality=90)
 
 
+def generate_shopify_sku(category, stock_code):
+    prefix = (category or "").strip()
+    prefix = re.sub(r"[^A-Za-z]", "", prefix)
+    prefix = (prefix[:3].upper() if prefix else "GEN")
+    return f"{prefix}-{(stock_code or '').strip()}"
+
+
+def slugify_text(value):
+    value = (value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-")
+
+
 def product_to_dict(row):
     photos = parse_photos(row["photos"])
     return {
@@ -86,6 +102,7 @@ def product_to_dict(row):
         "status": row["status"] or "pending",
         "notes": row["notes"] or "",
         "shopify_handle": row["shopify_handle"] or "",
+        "shopify_sku": row["shopify_sku"] or generate_shopify_sku(row["category"], row["stock_code"]),
         "shopify_id": row["shopify_id"] or "",
         "shopify_pushed": int(row["shopify_pushed"] or 0),
         "shopify_pushed_at": row["shopify_pushed_at"],
@@ -117,6 +134,88 @@ def clean_supplier_formulas():
     conn.close()
 
 
+def backfill_shopify_sku():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, category, stock_code FROM products WHERE shopify_sku IS NULL OR TRIM(shopify_sku) = ''")
+    rows = cur.fetchall()
+    for row in rows:
+        cur.execute("UPDATE products SET shopify_sku = ? WHERE id = ?", (generate_shopify_sku(row["category"], row["stock_code"]), row["id"]))
+    conn.commit()
+    conn.close()
+
+
+def process_photo_async(filename):
+    final_path = os.path.join(UPLOAD_DIR, filename)
+    tmp_out = os.path.join(UPLOAD_DIR, f"processed_{filename}")
+    PHOTO_STATUS[filename] = {"status": "processing"}
+    ok = process_photo(final_path, tmp_out)
+    if os.path.exists(tmp_out):
+        try:
+            os.replace(tmp_out, final_path)
+        except OSError:
+            pass
+    PHOTO_STATUS[filename] = {"status": "done", "url": f"/static/uploads/{filename}", "processed": ok}
+
+
+def _call_groq_generate(product):
+    api_key = (get_setting("groq_api_key") or "").strip()
+    if not api_key:
+        return {"success": False, "error": "Groq API key not configured. Go to Settings to add your key."}
+    system_prompt = """You are a professional product copywriter for a South
+African trailer parts and accessories company. You write clear,
+accurate, and helpful product descriptions for an online store.
+The company sells parts used in the manufacturing and maintenance
+of trailers including suspension components, electrical parts,
+hydraulic systems, braking systems, coupling systems, and
+structural components. Descriptions must be professional,
+factual, and helpful to a customer who needs to identify and
+purchase the correct part. Write in English. Keep descriptions
+between 60-120 words. Do not use bullet points. Do not make up
+specifications you are not sure about. Focus on what the part
+is, what it does, and what trailer types or applications it
+suits."""
+    user_prompt = f"""Write a product description for this trailer part:
+
+Product name: {product['name']}
+Category: {product['category']}
+SKU: {product['shopify_sku']}
+
+Write a helpful, accurate product description for this part
+as it would appear on a Shopify store. Do not include the
+product name as a heading. Just write the description paragraph."""
+    try:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.4,
+                "max_tokens": 400,
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = ""
+        choices = data.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            text = message.get("content") or ""
+        if not text.strip():
+            return {"success": False, "error": "Groq returned empty description."}
+        return {"success": True, "description": text.strip()}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 @app.before_request
 def first_run_redirect():
     if request.path.startswith("/static/") or request.path.startswith("/api/"):
@@ -137,35 +236,74 @@ def first_run_redirect():
 def index():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT * FROM products
-        ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END, stock_code ASC
-        """
-    )
+    cur.execute("SELECT * FROM products ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END, stock_code ASC")
     products = [product_to_dict(r) for r in cur.fetchall()]
-    cur.execute(
-        "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category)!='' ORDER BY category"
-    )
+    cur.execute("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category)!='' ORDER BY category")
     categories = [r[0] for r in cur.fetchall()]
     conn.close()
-
     stats = get_counts()
     configured = bool((get_setting("shopify_store_url") or "").strip() and (get_setting("shopify_api_key") or "").strip())
     ready_to_push = len([p for p in products if p["status"] == "done" and not p["shopify_pushed"]])
-    return render_template(
-        "index.html",
-        products=products,
-        categories=categories,
-        stats=stats,
-        configured=configured,
-        ready_to_push=ready_to_push,
-    )
+    shown_count = len(products)
+    return render_template("index.html", products=products, categories=categories, stats=stats, configured=configured, ready_to_push=ready_to_push, shown_count=shown_count, target_total=int(get_setting("products_total_target") or "2036"))
+
+
+@app.route("/product/new", methods=["GET", "POST"])
+def create_product():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category")
+    categories = [r[0] for r in cur.fetchall()]
+
+    if request.method == "GET":
+        conn.close()
+        return render_template("add_product.html", categories=categories, error="")
+
+    stock_code = (request.form.get("stock_code") or "").strip()
+    name = (request.form.get("name") or "").strip()
+    category = (request.form.get("category") or "").strip()
+
+    if not stock_code or not name:
+        conn.close()
+        return render_template(
+            "add_product.html",
+            categories=categories,
+            error="Stock code and name are required.",
+            form_data={"stock_code": stock_code, "name": name, "category": category},
+        )
+
+    try:
+        handle = slugify_text(name) or slugify_text(stock_code)
+        shopify_sku = generate_shopify_sku(category, stock_code)
+        cur.execute(
+            """
+            INSERT INTO products (stock_code, name, category, shopify_handle, shopify_sku, status, photos)
+            VALUES (?, ?, ?, ?, ?, 'pending', '[]')
+            """,
+            (stock_code, name, category, handle, shopify_sku),
+        )
+        product_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return redirect(url_for("product_page", product_id=product_id))
+    except sqlite3.IntegrityError:
+        conn.close()
+        return render_template(
+            "add_product.html",
+            categories=categories,
+            error=f"Stock code '{stock_code}' already exists.",
+            form_data={"stock_code": stock_code, "name": name, "category": category},
+        )
 
 
 @app.route("/setup")
 def setup():
     return render_template("setup.html")
+
+
+@app.route("/help")
+def help_page():
+    return render_template("help.html")
 
 
 @app.route("/setup/import", methods=["POST"])
@@ -175,28 +313,18 @@ def setup_import():
         file = request.files.get("excel_file")
         if not file or not file.filename:
             return render_template("setup.html", error="Please select an Excel file.")
-
         incoming_name = os.path.basename(file.filename)
         tmp_path = os.path.join(DATA_DIR, f"setup_upload_{incoming_name}")
         file.save(tmp_path)
-
         imported, skipped = import_excel(tmp_path)
         if imported == 0:
-            return render_template(
-                "setup.html",
-                error="Import failed or no valid rows found. Please confirm the Excel columns are: Stock Code, Description, Supplier, Category.",
-            )
+            return render_template("setup.html", error="Import failed or no valid rows found. Please confirm the Excel columns are: Stock Code, Description, Supplier, Category.")
+        backfill_shopify_sku()
         return redirect(url_for("index"))
     except Exception as exc:
-        # Show a friendly message in the browser, but print full traceback to console
-        # so we can debug exactly what's failing on the target PC.
         print("\n[SETUP IMPORT ERROR]")
         print(traceback.format_exc())
-        msg = str(exc) or "Unknown error"
-        return render_template(
-            "setup.html",
-            error=f"Import failed with error: {msg}",
-        )
+        return render_template("setup.html", error=f"Import failed with error: {str(exc) or 'Unknown error'}")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -215,28 +343,17 @@ def product_page(product_id):
         conn.close()
         return "Product not found", 404
     product = product_to_dict(row)
-
     cur.execute("SELECT id, stock_code FROM products ORDER BY id ASC")
     all_ids = [dict(r) for r in cur.fetchall()]
     conn.close()
     pos = next((i for i, p in enumerate(all_ids) if p["id"] == product_id), 0)
     prev_item = all_ids[pos - 1] if pos > 0 else all_ids[-1]
     next_item = all_ids[pos + 1] if pos < len(all_ids) - 1 else all_ids[0]
-
     stats = get_counts()
     configured = bool((get_setting("shopify_store_url") or "").strip() and (get_setting("shopify_api_key") or "").strip())
+    groq_configured = bool((get_setting("groq_api_key") or "").strip())
     needs_repush = bool(product["shopify_pushed"] and product["shopify_pushed_at"] and product["updated_at"] and product["updated_at"] > product["shopify_pushed_at"])
-    return render_template(
-        "product.html",
-        product=product,
-        previous=prev_item,
-        next_item=next_item,
-        position=pos + 1,
-        target_total=int(get_setting("products_total_target") or "2036"),
-        stats=stats,
-        shopify_configured=configured,
-        needs_repush=needs_repush,
-    )
+    return render_template("product.html", product=product, previous=prev_item, next_item=next_item, position=pos + 1, target_total=int(get_setting("products_total_target") or "2036"), stats=stats, shopify_configured=configured, groq_configured=groq_configured, needs_repush=needs_repush)
 
 
 @app.route("/product/<int:product_id>/save", methods=["POST"])
@@ -248,14 +365,13 @@ def save_product(product_id):
     status = payload.get("status", "pending")
     if status not in ("pending", "done"):
         status = "pending"
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         """
         UPDATE products
            SET web_description = ?, sell_price = ?, compare_price = ?, tags = ?, notes = ?,
-               status = ?, photos = ?, updated_at = CURRENT_TIMESTAMP
+               status = ?, photos = ?, shopify_sku = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
         """,
         (
@@ -266,6 +382,7 @@ def save_product(product_id):
             payload.get("notes", ""),
             status,
             json.dumps([os.path.basename(p) for p in photos]),
+            (payload.get("shopify_sku") or "").strip() or None,
             product_id,
         ),
     )
@@ -289,18 +406,27 @@ def api_upload_photo():
             conn.close()
             return jsonify({"success": False, "error": "Product not found"}), 404
         filename = f"{sanitize_stock_code(row['stock_code'])}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg"
-        tmp_path = os.path.join(UPLOAD_DIR, f"tmp_{filename}")
         final_path = os.path.join(UPLOAD_DIR, filename)
-        file.save(tmp_path)
-        resize_to_jpeg(tmp_path, final_path, max_side=2048)
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        file.save(final_path)
         photos = parse_photos(row["photos"])
         photos.append(filename)
         cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(photos), product_id))
         conn.commit()
         conn.close()
-        return jsonify({"success": True, "filename": filename, "url": f"/static/uploads/{filename}"})
+        threading.Thread(target=process_photo_async, args=(filename,), daemon=True).start()
+        return jsonify({"success": True, "filename": filename, "url": f"/static/uploads/{filename}", "processing": True})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/photo-status/<path:filename>")
+def api_photo_status(filename):
+    try:
+        safe_name = os.path.basename(filename)
+        info = PHOTO_STATUS.get(safe_name)
+        if info and info.get("status") == "processing":
+            return jsonify({"status": "processing"})
+        return jsonify({"status": "done", "url": f"/static/uploads/{safe_name}"})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
 
@@ -383,18 +509,15 @@ def api_claim_inbox():
             conn.close()
             return jsonify({"success": False, "error": "Product not found"}), 404
         new_name = f"{sanitize_stock_code(row['stock_code'])}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg"
-        tmp_path = os.path.join(UPLOAD_DIR, f"tmp_{new_name}")
         final_path = os.path.join(UPLOAD_DIR, new_name)
-        shutil.move(source, tmp_path)
-        resize_to_jpeg(tmp_path, final_path, max_side=2048)
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        shutil.move(source, final_path)
         photos = parse_photos(row["photos"])
         photos.append(new_name)
         cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(photos), product_id))
         conn.commit()
         conn.close()
-        return jsonify({"success": True, "filename": new_name, "url": f"/static/uploads/{new_name}"})
+        threading.Thread(target=process_photo_async, args=(new_name,), daemon=True).start()
+        return jsonify({"success": True, "filename": new_name, "url": f"/static/uploads/{new_name}", "processing": True})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
 
@@ -450,6 +573,7 @@ def settings_page():
         "settings.html",
         shopify_store_url=get_setting("shopify_store_url") or "",
         shopify_api_key=get_setting("shopify_api_key") or "",
+        groq_api_key=get_setting("groq_api_key") or "",
         products_total_target=get_setting("products_total_target") or "2036",
     )
 
@@ -460,6 +584,7 @@ def settings_save():
         payload = request.get_json(silent=True) or {}
         set_setting("shopify_store_url", (payload.get("shopify_store_url") or "").strip())
         set_setting("shopify_api_key", (payload.get("shopify_api_key") or "").strip())
+        set_setting("groq_api_key", (payload.get("groq_api_key") or "").strip())
         if payload.get("products_total_target") is not None:
             set_setting("products_total_target", str(payload.get("products_total_target") or "2036"))
         ok, message = test_connection()
@@ -534,10 +659,45 @@ def api_push_progress():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+@app.route("/api/rembg-warmup", methods=["POST"])
+def api_rembg_warmup():
+    try:
+        warmup_in = os.path.join(DATA_DIR, "_rembg_warmup_in.jpg")
+        warmup_out = os.path.join(DATA_DIR, "_rembg_warmup_out.jpg")
+        img = Image.new("RGB", (64, 64), (240, 240, 240))
+        img.save(warmup_in, "JPEG", quality=85)
+        ok = process_photo(warmup_in, warmup_out)
+        for p in (warmup_in, warmup_out):
+            if os.path.exists(p):
+                os.remove(p)
+        return jsonify({"success": True, "downloaded": True, "processed": ok})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/generate-description", methods=["POST"])
+def api_generate_description():
+    try:
+        payload = request.get_json(silent=True) or {}
+        product_id = int(payload.get("product_id", 0))
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM products WHERE id = ?", (product_id,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+        result = _call_groq_generate(product_to_dict(row))
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 if __name__ == "__main__":
     ensure_storage_dirs()
     init_db()
     clean_supplier_formulas()
+    backfill_shopify_sku()
     print("\n=============================")
     print("  Catalog Manager is running")
     print("  http://localhost:5001")
