@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Settings - Catalog Manager{% endblock %}
+{% block content %}
+<section class="panel settings-panel">
+  <h2>Shopify Connection</h2>
+  <div class="form-field">
+    <label>Store URL</label>
+    <input type="text" id="shopify_store_url" placeholder="yourstore.myshopify.com" value="{{ shopify_store_url }}">
+  </div>
+  <div class="form-field">
+    <label>API Key</label>
+    <div class="row-2">
+      <input type="password" id="shopify_api_key" value="{{ shopify_api_key }}">
+      <button class="btn btn-light" id="toggleApiKeyBtn" type="button">Show/Hide</button>
+    </div>
+  </div>
+  <button id="saveSettingsBtn" class="btn btn-green">Save & Test Connection</button>
+  <p id="settingsStatus" class="save-status"></p>
+  <p class="sub">
+    To get your API key: Shopify Admin → Settings → Apps → Develop apps → Create app → Configure Admin API →
+    enable write_products and read_products → Install → Reveal token
+  </p>
+</section>
+
+<section class="panel settings-panel">
+  <h2>App Settings</h2>
+  <div class="form-field">
+    <label>Total products target</label>
+    <input type="number" id="products_total_target" value="{{ products_total_target }}">
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>initSettingsPage();</script>
+{% endblock %}

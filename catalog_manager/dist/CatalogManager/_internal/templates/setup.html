@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Setup - Catalog Manager{% endblock %}
+{% block content %}
+<section class="panel setup-panel">
+  <h1>Welcome to Catalog Manager</h1>
+  <p>Let's import your products to get started</p>
+  {% if error %}<p class="upload-error">{{ error }}</p>{% endif %}
+  <form action="{{ url_for('setup_import') }}" method="post" enctype="multipart/form-data" class="setup-form">
+    <label for="excel_file">Select your Excel spreadsheet</label>
+    <input id="excel_file" name="excel_file" type="file" accept=".xlsx,.xlsm,.xls" required>
+    <button class="btn btn-green" type="submit">Import</button>
+  </form>
+  <div class="progress-wrap hidden" id="setupProgressWrap">
+    <div class="progress-bar"><div class="progress-fill" style="width: 100%"></div></div>
+    <small id="setupStatus">Importing products...</small>
+  </div>
+</section>
+{% endblock %}
