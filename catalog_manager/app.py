@@ -11,7 +11,14 @@ import requests
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
 from PIL import Image
 
-from database import get_conn, get_setting, init_db, set_setting
+from database import (
+    get_catalogue_setting,
+    get_conn,
+    get_setting,
+    init_db,
+    set_catalogue_setting,
+    set_setting,
+)
 from image_utils import process_photo
 from import_excel import import_excel
 from shopify import push_product, test_connection
@@ -111,19 +118,73 @@ def product_to_dict(row):
     }
 
 
-def get_counts():
+def list_catalogues():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM products")
-    total = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM products WHERE status='done'")
-    done = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM products WHERE shopify_pushed=1")
-    pushed = cur.fetchone()[0]
+    cur.execute("SELECT id, name FROM catalogues ORDER BY name ASC")
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_current_catalogue_id():
+    selected = (get_setting("current_catalogue_id") or "").strip()
+    conn = get_conn()
+    cur = conn.cursor()
+    if selected.isdigit():
+        cur.execute("SELECT id FROM catalogues WHERE id = ?", (int(selected),))
+        exists = cur.fetchone()
+        if exists:
+            conn.close()
+            return int(selected)
+    cur.execute("SELECT id FROM catalogues ORDER BY id ASC LIMIT 1")
+    row = cur.fetchone()
+    if row:
+        catalogue_id = int(row["id"])
+        conn.close()
+        set_setting("current_catalogue_id", str(catalogue_id))
+        return catalogue_id
+    cur.execute("INSERT INTO catalogues (name) VALUES (?)", ("Current Catalogue",))
+    catalogue_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    set_setting("current_catalogue_id", str(catalogue_id))
+    return int(catalogue_id)
+
+
+def get_counts(catalogue_id=None):
+    conn = get_conn()
+    cur = conn.cursor()
+    if catalogue_id is None:
+        cur.execute("SELECT COUNT(*) FROM products")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM products WHERE status='done'")
+        done = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM products WHERE shopify_pushed=1")
+        pushed = cur.fetchone()[0]
+    else:
+        cur.execute("SELECT COUNT(*) FROM products WHERE catalogue_id = ?", (catalogue_id,))
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM products WHERE catalogue_id = ? AND status='done'", (catalogue_id,))
+        done = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM products WHERE catalogue_id = ? AND shopify_pushed=1", (catalogue_id,))
+        pushed = cur.fetchone()[0]
     conn.close()
     pending = total - done
     percent = round((done / total) * 100, 2) if total else 0
     return {"total": total, "done": done, "pending": pending, "percent": percent, "pushed": pushed}
+
+
+@app.context_processor
+def inject_catalogue_state():
+    catalogues = list_catalogues()
+    current_id = get_current_catalogue_id()
+    current = next((c for c in catalogues if c["id"] == current_id), None)
+    return {
+        "available_catalogues": catalogues,
+        "current_catalogue_id": current_id,
+        "current_catalogue_name": (current or {}).get("name", "Current Catalogue"),
+    }
 
 
 def clean_supplier_formulas():
@@ -234,25 +295,48 @@ def first_run_redirect():
 
 @app.route("/")
 def index():
+    catalogue_id = get_current_catalogue_id()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM products ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END, stock_code ASC")
+    cur.execute(
+        "SELECT * FROM products WHERE catalogue_id = ? ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END, stock_code ASC",
+        (catalogue_id,),
+    )
     products = [product_to_dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category)!='' ORDER BY category")
+    cur.execute(
+        "SELECT DISTINCT category FROM products WHERE catalogue_id = ? AND category IS NOT NULL AND TRIM(category)!='' ORDER BY category",
+        (catalogue_id,),
+    )
     categories = [r[0] for r in cur.fetchall()]
     conn.close()
-    stats = get_counts()
-    configured = bool((get_setting("shopify_store_url") or "").strip() and (get_setting("shopify_api_key") or "").strip())
+    stats = get_counts(catalogue_id)
+    configured = bool(
+        (get_catalogue_setting(catalogue_id, "shopify_store_url") or "").strip()
+        and (get_catalogue_setting(catalogue_id, "shopify_api_key") or "").strip()
+    )
     ready_to_push = len([p for p in products if p["status"] == "done" and not p["shopify_pushed"]])
     shown_count = len(products)
-    return render_template("index.html", products=products, categories=categories, stats=stats, configured=configured, ready_to_push=ready_to_push, shown_count=shown_count, target_total=int(get_setting("products_total_target") or "2036"))
+    return render_template(
+        "index.html",
+        products=products,
+        categories=categories,
+        stats=stats,
+        configured=configured,
+        ready_to_push=ready_to_push,
+        shown_count=shown_count,
+        target_total=int(get_catalogue_setting(catalogue_id, "products_total_target") or "2036"),
+    )
 
 
 @app.route("/product/new", methods=["GET", "POST"])
 def create_product():
+    catalogue_id = get_current_catalogue_id()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category")
+    cur.execute(
+        "SELECT DISTINCT category FROM products WHERE catalogue_id = ? AND category IS NOT NULL AND TRIM(category) != '' ORDER BY category",
+        (catalogue_id,),
+    )
     categories = [r[0] for r in cur.fetchall()]
 
     if request.method == "GET":
@@ -277,10 +361,10 @@ def create_product():
         shopify_sku = generate_shopify_sku(category, stock_code)
         cur.execute(
             """
-            INSERT INTO products (stock_code, name, category, shopify_handle, shopify_sku, status, photos)
-            VALUES (?, ?, ?, ?, ?, 'pending', '[]')
+            INSERT INTO products (stock_code, name, category, shopify_handle, shopify_sku, status, photos, catalogue_id)
+            VALUES (?, ?, ?, ?, ?, 'pending', '[]', ?)
             """,
-            (stock_code, name, category, handle, shopify_sku),
+            (stock_code, name, category, handle, shopify_sku, catalogue_id),
         )
         product_id = cur.lastrowid
         conn.commit()
@@ -306,6 +390,111 @@ def help_page():
     return render_template("help.html")
 
 
+@app.route("/catalogues", methods=["GET", "POST"])
+def catalogues_page():
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip()
+        conn = get_conn()
+        cur = conn.cursor()
+        if action == "rename_current":
+            current_id = get_current_catalogue_id()
+            new_name = (request.form.get("current_name") or "").strip()
+            if new_name:
+                try:
+                    cur.execute("UPDATE catalogues SET name = ? WHERE id = ?", (new_name, current_id))
+                    conn.commit()
+                    set_setting("current_catalogue_id", str(current_id))
+                except sqlite3.IntegrityError:
+                    conn.close()
+                    return redirect(url_for("catalogues_page", manage_error=f"Catalogue name '{new_name}' already exists."))
+            else:
+                conn.close()
+                return redirect(url_for("catalogues_page", manage_error="Please enter a catalogue name."))
+        elif action == "create":
+            new_name = (request.form.get("new_name") or "").strip()
+            if new_name:
+                try:
+                    cur.execute("INSERT INTO catalogues (name) VALUES (?)", (new_name,))
+                    conn.commit()
+                    new_catalogue_id = cur.lastrowid
+                    set_setting("current_catalogue_id", str(new_catalogue_id))
+                    set_catalogue_setting(new_catalogue_id, "shopify_store_url", "")
+                    set_catalogue_setting(new_catalogue_id, "shopify_api_key", "")
+                    set_catalogue_setting(new_catalogue_id, "products_total_target", "2036")
+                except sqlite3.IntegrityError:
+                    conn.close()
+                    return redirect(url_for("catalogues_page", manage_error=f"Catalogue name '{new_name}' already exists."))
+            else:
+                conn.close()
+                return redirect(url_for("catalogues_page", manage_error="Please enter a catalogue name."))
+        conn.close()
+        return redirect(url_for("catalogues_page", manage_message="Catalogue updated successfully."))
+
+    return render_template(
+        "catalogues.html",
+        import_message=(request.args.get("import_message") or "").strip(),
+        import_error=(request.args.get("import_error") or "").strip(),
+        manage_message=(request.args.get("manage_message") or "").strip(),
+        manage_error=(request.args.get("manage_error") or "").strip(),
+    )
+
+
+@app.route("/catalogues/switch", methods=["POST"])
+def switch_catalogue():
+    selected = (request.form.get("catalogue_id") or "").strip()
+    if selected.isdigit():
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM catalogues WHERE id = ?", (int(selected),))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            set_setting("current_catalogue_id", str(row["id"]))
+    return redirect(request.referrer or url_for("index"))
+
+
+@app.route("/catalogues/import", methods=["POST"])
+def import_catalogue_excel():
+    tmp_path = None
+    try:
+        file = request.files.get("excel_file")
+        if not file or not file.filename:
+            return redirect(url_for("catalogues_page", import_error="Please select an Excel file."))
+        incoming_name = os.path.basename(file.filename)
+        tmp_path = os.path.join(DATA_DIR, f"catalogue_upload_{incoming_name}")
+        file.save(tmp_path)
+        catalogue_id = get_current_catalogue_id()
+        import_mode = (request.form.get("import_mode") or "upsert").strip().lower()
+        update_existing = import_mode != "insert_only"
+        imported, skipped, summary = import_excel(tmp_path, catalogue_id=catalogue_id, update_existing=update_existing)
+        updated = int(summary.get("updated", 0))
+        backfill_shopify_sku()
+        reason_parts = []
+        if summary.get("missing_stock_code"):
+            reason_parts.append(f"{summary['missing_stock_code']} missing stock code")
+        if summary.get("duplicate_in_file"):
+            reason_parts.append(f"{summary['duplicate_in_file']} duplicate in file")
+        if summary.get("existing_stock_code"):
+            reason_parts.append(f"{summary['existing_stock_code']} stock code already exists")
+        if summary.get("other_catalogue_conflict"):
+            reason_parts.append(f"{summary['other_catalogue_conflict']} exists in another catalogue")
+        if summary.get("errors"):
+            reason_parts.append(f"{summary['errors']} errors")
+        reasons_text = "; ".join(reason_parts) if reason_parts else "No skipped-row reasons."
+        mode_label = "Insert + Update" if update_existing else "Insert only"
+        return redirect(url_for("catalogues_page", import_message=f"Import mode: {mode_label}. Inserted: {imported}, Updated: {updated}, Skipped: {skipped}. {reasons_text}"))
+    except Exception as exc:
+        print("\n[CATALOGUE IMPORT ERROR]")
+        print(traceback.format_exc())
+        return redirect(url_for("catalogues_page", import_error=f"Import failed: {str(exc) or 'Unknown error'}"))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
 @app.route("/setup/import", methods=["POST"])
 def setup_import():
     tmp_path = None
@@ -316,9 +505,15 @@ def setup_import():
         incoming_name = os.path.basename(file.filename)
         tmp_path = os.path.join(DATA_DIR, f"setup_upload_{incoming_name}")
         file.save(tmp_path)
-        imported, skipped = import_excel(tmp_path)
+        imported, skipped, summary = import_excel(tmp_path)
         if imported == 0:
             return render_template("setup.html", error="Import failed or no valid rows found. Please confirm the Excel columns are: Stock Code, Description, Supplier, Category.")
+        current_catalogue_id = get_current_catalogue_id()
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE products SET catalogue_id = ? WHERE catalogue_id IS NULL", (current_catalogue_id,))
+        conn.commit()
+        conn.close()
         backfill_shopify_sku()
         return redirect(url_for("index"))
     except Exception as exc:
@@ -335,29 +530,45 @@ def setup_import():
 
 @app.route("/product/<int:product_id>")
 def product_page(product_id):
+    catalogue_id = get_current_catalogue_id()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM products WHERE id=?", (product_id,))
+    cur.execute("SELECT * FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
     row = cur.fetchone()
     if not row:
         conn.close()
         return "Product not found", 404
     product = product_to_dict(row)
-    cur.execute("SELECT id, stock_code FROM products ORDER BY id ASC")
+    cur.execute("SELECT id, stock_code FROM products WHERE catalogue_id = ? ORDER BY id ASC", (catalogue_id,))
     all_ids = [dict(r) for r in cur.fetchall()]
     conn.close()
     pos = next((i for i, p in enumerate(all_ids) if p["id"] == product_id), 0)
     prev_item = all_ids[pos - 1] if pos > 0 else all_ids[-1]
     next_item = all_ids[pos + 1] if pos < len(all_ids) - 1 else all_ids[0]
-    stats = get_counts()
-    configured = bool((get_setting("shopify_store_url") or "").strip() and (get_setting("shopify_api_key") or "").strip())
+    stats = get_counts(catalogue_id)
+    configured = bool(
+        (get_catalogue_setting(catalogue_id, "shopify_store_url") or "").strip()
+        and (get_catalogue_setting(catalogue_id, "shopify_api_key") or "").strip()
+    )
     groq_configured = bool((get_setting("groq_api_key") or "").strip())
     needs_repush = bool(product["shopify_pushed"] and product["shopify_pushed_at"] and product["updated_at"] and product["updated_at"] > product["shopify_pushed_at"])
-    return render_template("product.html", product=product, previous=prev_item, next_item=next_item, position=pos + 1, target_total=int(get_setting("products_total_target") or "2036"), stats=stats, shopify_configured=configured, groq_configured=groq_configured, needs_repush=needs_repush)
+    return render_template(
+        "product.html",
+        product=product,
+        previous=prev_item,
+        next_item=next_item,
+        position=pos + 1,
+        target_total=int(get_catalogue_setting(catalogue_id, "products_total_target") or "2036"),
+        stats=stats,
+        shopify_configured=configured,
+        groq_configured=groq_configured,
+        needs_repush=needs_repush,
+    )
 
 
 @app.route("/product/<int:product_id>/save", methods=["POST"])
 def save_product(product_id):
+    catalogue_id = get_current_catalogue_id()
     payload = request.get_json(silent=True) or {}
     photos = payload.get("photos", [])
     if not isinstance(photos, list):
@@ -372,7 +583,7 @@ def save_product(product_id):
         UPDATE products
            SET web_description = ?, sell_price = ?, compare_price = ?, tags = ?, notes = ?,
                status = ?, photos = ?, shopify_sku = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?
+         WHERE id = ? AND catalogue_id = ?
         """,
         (
             payload.get("web_description", ""),
@@ -384,6 +595,7 @@ def save_product(product_id):
             json.dumps([os.path.basename(p) for p in photos]),
             (payload.get("shopify_sku") or "").strip() or None,
             product_id,
+            catalogue_id,
         ),
     )
     conn.commit()
@@ -394,13 +606,14 @@ def save_product(product_id):
 @app.route("/api/upload-photo", methods=["POST"])
 def api_upload_photo():
     try:
+        catalogue_id = get_current_catalogue_id()
         if "photo" not in request.files:
             return jsonify({"success": False, "error": "No file uploaded"}), 400
         product_id = int(request.form.get("product_id", "0"))
         file = request.files["photo"]
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT stock_code, photos FROM products WHERE id=?", (product_id,))
+        cur.execute("SELECT stock_code, photos FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
         row = cur.fetchone()
         if not row:
             conn.close()
@@ -410,7 +623,7 @@ def api_upload_photo():
         file.save(final_path)
         photos = parse_photos(row["photos"])
         photos.append(filename)
-        cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(photos), product_id))
+        cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id = ? AND catalogue_id = ?", (json.dumps(photos), product_id, catalogue_id))
         conn.commit()
         conn.close()
         threading.Thread(target=process_photo_async, args=(filename,), daemon=True).start()
@@ -434,16 +647,17 @@ def api_photo_status(filename):
 @app.route("/api/delete-photo", methods=["POST"])
 def api_delete_photo():
     try:
+        catalogue_id = get_current_catalogue_id()
         payload = request.get_json(silent=True) or {}
         filename = os.path.basename(payload.get("filename", ""))
         product_id = int(payload.get("product_id", 0))
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT photos FROM products WHERE id=?", (product_id,))
+        cur.execute("SELECT photos FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
         row = cur.fetchone()
         if row:
             photos = [f for f in parse_photos(row["photos"]) if f != filename]
-            cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(photos), product_id))
+            cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id = ? AND catalogue_id = ?", (json.dumps(photos), product_id, catalogue_id))
         conn.commit()
         conn.close()
         path = os.path.join(UPLOAD_DIR, filename)
@@ -457,12 +671,13 @@ def api_delete_photo():
 @app.route("/api/reorder-photos", methods=["POST"])
 def api_reorder_photos():
     try:
+        catalogue_id = get_current_catalogue_id()
         payload = request.get_json(silent=True) or {}
         product_id = int(payload.get("product_id", 0))
         filenames = [os.path.basename(f) for f in payload.get("filenames", [])]
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(filenames), product_id))
+        cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id = ? AND catalogue_id = ?", (json.dumps(filenames), product_id, catalogue_id))
         conn.commit()
         conn.close()
         return jsonify({"success": True})
@@ -495,6 +710,7 @@ def api_inbox_preview(filename):
 @app.route("/api/claim-inbox", methods=["POST"])
 def api_claim_inbox():
     try:
+        catalogue_id = get_current_catalogue_id()
         payload = request.get_json(silent=True) or {}
         filename = os.path.basename(payload.get("filename", ""))
         product_id = int(payload.get("product_id", 0))
@@ -503,7 +719,7 @@ def api_claim_inbox():
             return jsonify({"success": False, "error": "File not found"}), 404
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT stock_code, photos FROM products WHERE id=?", (product_id,))
+        cur.execute("SELECT stock_code, photos FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
         row = cur.fetchone()
         if not row:
             conn.close()
@@ -513,7 +729,7 @@ def api_claim_inbox():
         shutil.move(source, final_path)
         photos = parse_photos(row["photos"])
         photos.append(new_name)
-        cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (json.dumps(photos), product_id))
+        cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id = ? AND catalogue_id = ?", (json.dumps(photos), product_id, catalogue_id))
         conn.commit()
         conn.close()
         threading.Thread(target=process_photo_async, args=(new_name,), daemon=True).start()
@@ -538,15 +754,16 @@ def api_discard_inbox():
 @app.route("/api/next-product")
 def api_next_product():
     try:
+        catalogue_id = get_current_catalogue_id()
         current_id = int(request.args.get("current_id", "0"))
         direction = request.args.get("direction", "next")
         filter_mode = request.args.get("filter", "all")
         conn = get_conn()
         cur = conn.cursor()
         if filter_mode == "pending":
-            cur.execute("SELECT id, stock_code, name FROM products WHERE status='pending' ORDER BY id ASC")
+            cur.execute("SELECT id, stock_code, name FROM products WHERE catalogue_id = ? AND status='pending' ORDER BY id ASC", (catalogue_id,))
         else:
-            cur.execute("SELECT id, stock_code, name FROM products ORDER BY id ASC")
+            cur.execute("SELECT id, stock_code, name FROM products WHERE catalogue_id = ? ORDER BY id ASC", (catalogue_id,))
         items = [dict(r) for r in cur.fetchall()]
         conn.close()
         if not items:
@@ -561,7 +778,7 @@ def api_next_product():
 @app.route("/api/stats")
 def api_stats():
     try:
-        stats = get_counts()
+        stats = get_counts(get_current_catalogue_id())
         return jsonify({"total": stats["total"], "done": stats["done"], "pending": stats["pending"], "percent": stats["percent"]})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -569,25 +786,27 @@ def api_stats():
 
 @app.route("/settings")
 def settings_page():
+    catalogue_id = get_current_catalogue_id()
     return render_template(
         "settings.html",
-        shopify_store_url=get_setting("shopify_store_url") or "",
-        shopify_api_key=get_setting("shopify_api_key") or "",
+        shopify_store_url=get_catalogue_setting(catalogue_id, "shopify_store_url") or "",
+        shopify_api_key=get_catalogue_setting(catalogue_id, "shopify_api_key") or "",
         groq_api_key=get_setting("groq_api_key") or "",
-        products_total_target=get_setting("products_total_target") or "2036",
+        products_total_target=get_catalogue_setting(catalogue_id, "products_total_target") or "2036",
     )
 
 
 @app.route("/settings/save", methods=["POST"])
 def settings_save():
     try:
+        catalogue_id = get_current_catalogue_id()
         payload = request.get_json(silent=True) or {}
-        set_setting("shopify_store_url", (payload.get("shopify_store_url") or "").strip())
-        set_setting("shopify_api_key", (payload.get("shopify_api_key") or "").strip())
+        set_catalogue_setting(catalogue_id, "shopify_store_url", (payload.get("shopify_store_url") or "").strip())
+        set_catalogue_setting(catalogue_id, "shopify_api_key", (payload.get("shopify_api_key") or "").strip())
         set_setting("groq_api_key", (payload.get("groq_api_key") or "").strip())
         if payload.get("products_total_target") is not None:
-            set_setting("products_total_target", str(payload.get("products_total_target") or "2036"))
-        ok, message = test_connection()
+            set_catalogue_setting(catalogue_id, "products_total_target", str(payload.get("products_total_target") or "2036"))
+        ok, message = test_connection(catalogue_id)
         return jsonify({"success": True, "connected": ok, "message": message})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -596,8 +815,9 @@ def settings_save():
 @app.route("/api/shopify-status")
 def api_shopify_status():
     try:
-        store = (get_setting("shopify_store_url") or "").strip()
-        token = (get_setting("shopify_api_key") or "").strip()
+        catalogue_id = get_current_catalogue_id()
+        store = (get_catalogue_setting(catalogue_id, "shopify_store_url") or "").strip()
+        token = (get_catalogue_setting(catalogue_id, "shopify_api_key") or "").strip()
         return jsonify({"configured": bool(store and token), "store": store})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -606,14 +826,15 @@ def api_shopify_status():
 @app.route("/api/push-to-shopify/<int:product_id>", methods=["POST"])
 def api_push_one(product_id):
     try:
+        catalogue_id = get_current_catalogue_id()
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM products WHERE id=?", (product_id,))
+        cur.execute("SELECT * FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
         row = cur.fetchone()
         conn.close()
         if not row:
             return jsonify({"success": False, "error": "Product not found"}), 404
-        result = push_product(product_to_dict(row))
+        result = push_product(product_to_dict(row), catalogue_id)
         return jsonify(result)
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -621,16 +842,17 @@ def api_push_one(product_id):
 
 def _batch_push_worker():
     global PUSH_PROGRESS
+    catalogue_id = get_current_catalogue_id()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM products WHERE status='done' AND shopify_pushed=0 ORDER BY id ASC")
+    cur.execute("SELECT * FROM products WHERE catalogue_id = ? AND status='done' AND shopify_pushed=0 ORDER BY id ASC", (catalogue_id,))
     rows = cur.fetchall()
     conn.close()
     PUSH_PROGRESS = {"running": True, "total": len(rows), "pushed": 0, "failed": 0, "current": ""}
     for row in rows:
         product = product_to_dict(row)
         PUSH_PROGRESS["current"] = product["stock_code"]
-        result = push_product(product)
+        result = push_product(product, catalogue_id)
         if result.get("success"):
             PUSH_PROGRESS["pushed"] += 1
         else:
@@ -678,11 +900,12 @@ def api_rembg_warmup():
 @app.route("/api/generate-description", methods=["POST"])
 def api_generate_description():
     try:
+        catalogue_id = get_current_catalogue_id()
         payload = request.get_json(silent=True) or {}
         product_id = int(payload.get("product_id", 0))
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM products WHERE id = ?", (product_id,))
+        cur.execute("SELECT * FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
         row = cur.fetchone()
         conn.close()
         if not row:

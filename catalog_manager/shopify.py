@@ -4,32 +4,32 @@ from datetime import datetime
 
 import requests
 
-from database import get_conn, get_setting
+from database import get_catalogue_setting, get_conn
 
 DATA_DIR = os.environ.get("CATALOG_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(DATA_DIR, "static", "uploads")
 API_VERSION = "2024-01"
 
 
-def get_headers():
-    api_key = (get_setting("shopify_api_key") or "").strip()
-    store = (get_setting("shopify_store_url") or "").strip().replace("https://", "").replace("http://", "")
+def get_headers(catalogue_id):
+    api_key = (get_catalogue_setting(catalogue_id, "shopify_api_key") or "").strip()
+    store = (get_catalogue_setting(catalogue_id, "shopify_store_url") or "").strip().replace("https://", "").replace("http://", "")
     return store, {
         "X-Shopify-Access-Token": api_key,
         "Content-Type": "application/json",
     }
 
 
-def _is_configured():
-    store, headers = get_headers()
+def _is_configured(catalogue_id):
+    store, headers = get_headers(catalogue_id)
     token = headers.get("X-Shopify-Access-Token", "")
     return bool(store and token)
 
 
-def test_connection():
-    if not _is_configured():
+def test_connection(catalogue_id):
+    if not _is_configured(catalogue_id):
         return False, "Missing Shopify store URL or API key."
-    store, headers = get_headers()
+    store, headers = get_headers(catalogue_id)
     url = f"https://{store}/admin/api/{API_VERSION}/shop.json"
     try:
         response = requests.get(url, headers=headers, timeout=15)
@@ -40,8 +40,8 @@ def test_connection():
         return False, str(exc)
 
 
-def upload_image_to_shopify(product_id, image_path, alt_text):
-    store, headers = get_headers()
+def upload_image_to_shopify(product_id, image_path, alt_text, catalogue_id):
+    store, headers = get_headers(catalogue_id)
     with open(image_path, "rb") as file:
         encoded = base64.b64encode(file.read()).decode("utf-8")
     payload = {"image": {"attachment": encoded, "alt": alt_text or ""}}
@@ -66,8 +66,8 @@ def _variant_payload(product_dict):
     }
 
 
-def create_product(product_dict):
-    store, headers = get_headers()
+def create_product(product_dict, catalogue_id):
+    store, headers = get_headers(catalogue_id)
     payload = {
         "product": {
             "title": product_dict["name"],
@@ -90,8 +90,8 @@ def create_product(product_dict):
     return str(data["product"]["id"])
 
 
-def update_product(shopify_id, product_dict):
-    store, headers = get_headers()
+def update_product(shopify_id, product_dict, catalogue_id):
+    store, headers = get_headers(catalogue_id)
     payload = {
         "product": {
             "id": int(shopify_id),
@@ -114,8 +114,8 @@ def update_product(shopify_id, product_dict):
     return True
 
 
-def push_product(product):
-    if not _is_configured():
+def push_product(product, catalogue_id):
+    if not _is_configured(catalogue_id):
         return {
             "success": False,
             "error": "Shopify not configured. Go to Settings to add your API key.",
@@ -123,14 +123,14 @@ def push_product(product):
     try:
         if product.get("shopify_id"):
             shopify_id = str(product["shopify_id"])
-            update_product(shopify_id, product)
+            update_product(shopify_id, product, catalogue_id)
         else:
-            shopify_id = create_product(product)
+            shopify_id = create_product(product, catalogue_id)
 
         for filename in (product.get("photos") or []):
             full_path = os.path.join(UPLOAD_DIR, os.path.basename(filename))
             if os.path.exists(full_path):
-                upload_image_to_shopify(shopify_id, full_path, product.get("name") or "")
+                upload_image_to_shopify(shopify_id, full_path, product.get("name") or "", catalogue_id)
 
         conn = get_conn()
         cur = conn.cursor()

@@ -4,6 +4,7 @@
 <a href="/" class="back-dashboard-btn">← Back to Dashboard</a>
 <section class="panel settings-panel">
   <h2>Shopify Connection</h2>
+  <p class="sub">These Shopify settings apply only to: <strong>{{ current_catalogue_name }}</strong></p>
   <div class="form-field"><label>Store URL</label><input type="text" id="shopify_store_url" placeholder="yourstore.myshopify.com" value="{{ shopify_store_url }}"></div>
   <div class="form-field">
     <label>API Key</label>
@@ -36,7 +37,14 @@
 
 <section class="panel settings-panel">
   <h2>App Settings</h2>
+  <p class="sub">Catalogue-specific settings for <strong>{{ current_catalogue_name }}</strong></p>
   <div class="form-field"><label>Total products target</label><input type="number" id="products_total_target" value="{{ products_total_target }}"></div>
+</section>
+
+<section class="panel settings-panel">
+  <h2>WooCommerce</h2>
+  <p class="sub">WooCommerce integration is planned for a later phase.</p>
+  <p class="sub">For now, only Shopify push is active.</p>
 </section>
 {% endblock %}
 {% block scripts %}<script>initSettingsPage();</script>{% endblock %}

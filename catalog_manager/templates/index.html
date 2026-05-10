@@ -1,9 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Catalog Manager{% endblock %}
 {% block content %}
-<header class="dash-head">
-  <div class="dash-brand"><span class="k-accent"></span><h1>Catalog Manager</h1></div>
+<header class="dash-head premium-head">
+  <div>
+    <div class="crumbs">Home / Dashboard / {{ current_catalogue_name }}</div>
+    <div class="dash-brand"><span class="k-accent"></span><h1>Catalog Manager</h1></div>
+    <p class="sub head-sub">Manage product data, media, and publishing workflows for this catalogue.</p>
+  </div>
   <div class="dash-actions">
+    <span class="sync-pill {% if configured %}ok{% else %}warn{% endif %}">
+      {% if configured %}Last sync ready{% else %}Sync not configured{% endif %}
+    </span>
     <a class="btn btn-blue" href="{{ url_for('create_product') }}">+ Add Product</a>
     <a class="btn btn-light" href="{{ url_for('settings_page') }}">⚙ Settings</a>
     <button class="btn btn-green" id="pushAllBtn" {% if not configured %}disabled{% endif %}>Push all done products</button>
@@ -11,11 +18,27 @@
   </div>
 </header>
 
-<section class="stats-grid">
-  <article class="stat-card blue"><div class="stat-value">{{ stats.total }}</div><div class="stat-label">Total Products</div></article>
-  <article class="stat-card green"><div class="stat-value">{{ stats.done }}</div><div class="stat-label">Done</div></article>
-  <article class="stat-card orange"><div class="stat-value">{{ stats.pending }}</div><div class="stat-label">Pending</div></article>
-  <article class="stat-card purple"><div class="stat-value">{{ stats.percent }}%</div><div class="stat-label">% Complete</div></article>
+<section class="stats-grid bento-grid">
+  <article class="stat-card blue kpi-card">
+    <div class="kpi-top"><span>Total Products</span><span class="trend up">+2.4%</span></div>
+    <div class="stat-value">{{ stats.total }}</div>
+    <div class="mini-spark"><span style="width:58%"></span></div>
+  </article>
+  <article class="stat-card green kpi-card">
+    <div class="kpi-top"><span>Done</span><span class="trend up">+4.8%</span></div>
+    <div class="stat-value">{{ stats.done }}</div>
+    <div class="mini-spark"><span style="width:{{ stats.percent }}%"></span></div>
+  </article>
+  <article class="stat-card orange kpi-card">
+    <div class="kpi-top"><span>Pending</span><span class="trend flat">-0.8%</span></div>
+    <div class="stat-value">{{ stats.pending }}</div>
+    <div class="mini-spark"><span style="width:{% if stats.total %}{{ (stats.pending / stats.total * 100)|round(0)|int }}{% else %}0{% endif %}%"></span></div>
+  </article>
+  <article class="stat-card purple kpi-card">
+    <div class="kpi-top"><span>% Complete</span><span class="trend up">Goal</span></div>
+    <div class="stat-value">{{ stats.percent }}%</div>
+    <div class="mini-spark"><span style="width:{{ stats.percent }}%"></span></div>
+  </article>
 </section>
 
 <section class="progress-wrap">
@@ -36,7 +59,15 @@
   <small id="batchPushText"></small>
 </section>
 
-<section class="filters">
+<section class="table-toolbar">
+  <div class="bulk-actions">
+    <button class="btn btn-light btn-small" type="button">Bulk Edit</button>
+    <button class="btn btn-light btn-small" type="button">Bulk Push</button>
+    <button class="btn btn-light btn-small" type="button">Export View</button>
+  </div>
+</section>
+
+<section class="filters floating-filters">
   <input type="text" id="searchInput" placeholder="🔍 Search stock code, name, category...">
   <div class="filter-group">
     <label class="filter-label" for="categoryFilter">Category:</label>
@@ -60,7 +91,14 @@
   (<span id="resultsDone">{{ stats.done }}</span> done, <span id="resultsPending">{{ stats.pending }}</span> pending)
 </div>
 
-<section class="table-wrap">
+<section class="table-wrap premium-table-wrap">
+  {% if products|length == 0 %}
+  <div class="empty-state">
+    <h3>No products yet in this catalogue</h3>
+    <p class="sub">Import an Excel file or add your first product manually to get started.</p>
+    <a class="btn btn-blue" href="{{ url_for('create_product') }}">Create First Product</a>
+  </div>
+  {% else %}
   <table id="productsTable">
     <thead>
       <tr>
@@ -99,6 +137,7 @@
       {% endfor %}
     </tbody>
   </table>
+  {% endif %}
 </section>
 
 <footer class="app-footer">Catalog Manager by Kodexa · Version 1.0.0</footer>

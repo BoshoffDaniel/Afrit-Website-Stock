@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Catalogues - Catalog Manager{% endblock %}
+{% block content %}
+<section class="panel settings-panel">
+  <h2>Catalogue Management</h2>
+  <p class="sub">Name your current catalogue and create new catalogues.</p>
+  {% if manage_message %}
+    <div class="save-status ok">{{ manage_message }}</div>
+  {% endif %}
+  {% if manage_error %}
+    <div class="save-status error">{{ manage_error }}</div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('catalogues_page') }}" class="setup-form">
+    <input type="hidden" name="action" value="rename_current">
+    <div class="form-field">
+      <label for="current_name">Current catalogue name</label>
+      <input id="current_name" name="current_name" type="text" required value="{{ current_catalogue_name }}">
+    </div>
+    <button class="btn btn-blue" type="submit">Save Current Name</button>
+  </form>
+</section>
+
+<section class="panel settings-panel">
+  <h2>Create New Catalogue</h2>
+  <form method="post" action="{{ url_for('catalogues_page') }}" class="setup-form">
+    <input type="hidden" name="action" value="create">
+    <div class="form-field">
+      <label for="new_name">New catalogue name</label>
+      <input id="new_name" name="new_name" type="text" required placeholder="e.g. Trailer Parts 2026">
+    </div>
+    <button class="btn btn-green" type="submit">Create and Switch</button>
+  </form>
+</section>
+
+<section class="panel settings-panel">
+  <h2>Import Excel Into Current Catalogue</h2>
+  <p class="sub">Imports products into: <strong>{{ current_catalogue_name }}</strong></p>
+  <p class="sub">Behavior: inserts new stock codes and updates existing matching stock codes.</p>
+  {% if import_message %}
+    <div class="save-status ok">{{ import_message }}</div>
+  {% endif %}
+  {% if import_error %}
+    <div class="save-status error">{{ import_error }}</div>
+  {% endif %}
+  <form method="post" action="{{ url_for('import_catalogue_excel') }}" class="setup-form" enctype="multipart/form-data">
+    <div class="form-field">
+      <label for="import_mode">Import mode</label>
+      <select id="import_mode" name="import_mode">
+        <option value="upsert" selected>Insert new + update existing</option>
+        <option value="insert_only">Insert new only (skip existing)</option>
+      </select>
+    </div>
+    <div class="form-field">
+      <label for="excel_file">Excel file (.xlsx)</label>
+      <input id="excel_file" name="excel_file" type="file" accept=".xlsx" required>
+    </div>
+    <button class="btn btn-green" type="submit">Import Excel</button>
+  </form>
+</section>
+{% endblock %}
