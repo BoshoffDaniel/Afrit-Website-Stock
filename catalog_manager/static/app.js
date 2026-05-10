@@ -9,6 +9,124 @@
     };
   };
 
+  let adminModalPromiseResolve = null;
+
+  function openAdminModal() {
+    const modal = byId("adminModal");
+    const pwd = byId("adminModalPassword");
+    const err = byId("adminModalError");
+    if (!modal || !pwd) return Promise.resolve(false);
+    err.classList.add("hidden");
+    err.textContent = "";
+    pwd.value = "";
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    pwd.focus();
+    return new Promise((resolve) => {
+      adminModalPromiseResolve = resolve;
+    });
+  }
+
+  function closeAdminModal(result) {
+    const modal = byId("adminModal");
+    if (modal) {
+      modal.classList.add("hidden");
+      modal.setAttribute("aria-hidden", "true");
+    }
+    if (adminModalPromiseResolve) {
+      adminModalPromiseResolve(!!result);
+      adminModalPromiseResolve = null;
+    }
+  }
+
+  function wireAdminModalOnce() {
+    const unlock = byId("adminModalUnlock");
+    const cancel = byId("adminModalCancel");
+    const pwd = byId("adminModalPassword");
+    const err = byId("adminModalError");
+    if (!unlock || unlock.dataset.wired) return;
+    unlock.dataset.wired = "1";
+    unlock.addEventListener("click", async () => {
+      err.classList.add("hidden");
+      const res = await fetch("/api/admin/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pwd.value || "" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) {
+        closeAdminModal(true);
+        return;
+      }
+      err.textContent = data.error || "Incorrect password";
+      err.classList.remove("hidden");
+    });
+    cancel.addEventListener("click", () => closeAdminModal(false));
+    byId("adminModal").querySelector(".admin-modal-backdrop").addEventListener("click", () => closeAdminModal(false));
+    pwd.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") unlock.click();
+    });
+  }
+
+  window.showAdminUnlock = function () {
+    wireAdminModalOnce();
+    return openAdminModal();
+  };
+
+  window.fetchWithAdmin = async function (url, options, retries) {
+    const opts = options || {};
+    const res = await fetch(url, opts);
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (_) {
+      data = {};
+    }
+    if (res.status === 403 && data.need_admin && retries !== 0) {
+      const ok = await window.showAdminUnlock();
+      if (ok) return window.fetchWithAdmin(url, opts, 0);
+    }
+    return { res, data };
+  };
+
+  document.addEventListener("DOMContentLoaded", wireAdminModalOnce);
+
+  window.initHeaderPushAll = function () {
+    const pushAllBtn = byId("pushAllBtn");
+    const batchWrap = byId("batchPushProgress");
+    const batchBar = byId("batchPushBar");
+    const batchText = byId("batchPushText");
+    if (!pushAllBtn || !batchWrap || !batchBar || pushAllBtn.dataset.bound) return;
+    pushAllBtn.dataset.bound = "1";
+    const poll = async () => {
+      const res = await fetch("/api/push-progress");
+      const p = await res.json();
+      const done = (p.pushed || 0) + (p.failed || 0);
+      const pct = p.total ? Math.round((done / p.total) * 100) : 0;
+      batchBar.style.width = `${pct}%`;
+      batchText.textContent = `Pushed ${p.pushed || 0}, failed ${p.failed || 0}, current ${p.current || "-"}`;
+      if (!p.running) setTimeout(() => window.location.reload(), 900);
+    };
+    pushAllBtn.addEventListener("click", async () => {
+      pushAllBtn.disabled = true;
+      batchWrap.classList.remove("hidden");
+      const res = await fetch("/api/push-all-to-shopify", { method: "POST" });
+      const data = await res.json();
+      if (!data.success) {
+        batchText.textContent = data.error || "Failed to start push";
+        pushAllBtn.disabled = false;
+        return;
+      }
+      poll();
+      const timer = setInterval(async () => {
+        await poll();
+        const r = await fetch("/api/push-progress");
+        const d = await r.json();
+        if (!d.running) clearInterval(timer);
+      }, 1000);
+    });
+  };
+
   window.initDashboard = function () {
     const table = byId("productsTable");
     if (!table) return;
@@ -47,43 +165,20 @@
     categoryFilter.addEventListener("change", applyFilters);
     statusFilter.addEventListener("change", applyFilters);
     applyFilters();
-
-    const pushAllBtn = byId("pushAllBtn");
-    const batchWrap = byId("batchPushProgress");
-    const batchBar = byId("batchPushBar");
-    const batchText = byId("batchPushText");
-    const poll = async () => {
-      const res = await fetch("/api/push-progress");
-      const p = await res.json();
-      const done = (p.pushed || 0) + (p.failed || 0);
-      const pct = p.total ? Math.round((done / p.total) * 100) : 0;
-      batchBar.style.width = `${pct}%`;
-      batchText.textContent = `Pushed ${p.pushed || 0}, failed ${p.failed || 0}, current ${p.current || "-"}`;
-      if (!p.running) setTimeout(() => window.location.reload(), 900);
-    };
-    if (pushAllBtn) {
-      pushAllBtn.addEventListener("click", async () => {
-        pushAllBtn.disabled = true;
-        batchWrap.classList.remove("hidden");
-        const res = await fetch("/api/push-all-to-shopify", { method: "POST" });
-        const data = await res.json();
-        if (!data.success) {
-          batchText.textContent = data.error || "Failed to start push";
-          pushAllBtn.disabled = false;
-          return;
-        }
-        poll();
-        const timer = setInterval(async () => {
-          await poll();
-          const r = await fetch("/api/push-progress");
-          const d = await r.json();
-          if (!d.running) clearInterval(timer);
-        }, 1000);
-      });
-    }
   };
 
   window.initSettingsPage = function () {
+    const gateBtn = byId("openSettingsGateBtn");
+    if (gateBtn) {
+      const msg = byId("settingsGateMsg");
+      gateBtn.addEventListener("click", async () => {
+        const ok = await window.showAdminUnlock();
+        if (ok) window.location.reload();
+        else if (msg) msg.textContent = "Unlock cancelled.";
+      });
+      return;
+    }
+
     const saveBtn = byId("saveSettingsBtn");
     if (!saveBtn) return;
     const status = byId("settingsStatus");
@@ -104,17 +199,17 @@
     });
 
     const doSave = async () => {
-      const res = await fetch("/settings/save", {
+      const { res, data } = await window.fetchWithAdmin("/settings/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(savePayload()),
       });
-      return res.json();
+      return { res, data };
     };
 
     saveBtn.addEventListener("click", async () => {
       status.textContent = "Saving...";
-      const data = await doSave();
+      const { data } = await doSave();
       if (!data.success) {
         status.textContent = data.error || "Save failed";
         status.className = "save-status error";
@@ -130,7 +225,7 @@
     const testBtn = byId("testShopifyBtn");
     testBtn.addEventListener("click", async () => {
       status.textContent = "Testing Shopify connection...";
-      const data = await doSave();
+      const { data } = await doSave();
       if (data.connected) {
         status.textContent = "Connected ✓";
         status.className = "save-status ok";
@@ -149,16 +244,176 @@
     });
   };
 
+  window.initProductsHub = function (opts) {
+    wireAdminModalOnce();
+    const tab = (opts && opts.tab) || "products";
+    if (tab === "categories") {
+      const statusEl = byId("categoriesStatus");
+      const addBtn = byId("addCategoryBtn");
+      const postJson = async (url, body) => window.fetchWithAdmin(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (addBtn) {
+        addBtn.addEventListener("click", async () => {
+          const { data: st } = await fetch("/api/admin/status").then((r) => r.json());
+          if (!st.admin) {
+            const ok = await window.showAdminUnlock();
+            if (!ok) return;
+          }
+          const name = window.prompt("New category name:");
+          if (!name || !name.trim()) return;
+          const { data } = await postJson("/api/categories", { name: name.trim() });
+          if (!data.success) {
+            statusEl.textContent = data.error || "Failed";
+            statusEl.className = "save-status error";
+            return;
+          }
+          window.location.reload();
+        });
+      }
+
+      document.querySelectorAll(".js-rename-cat").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const { data: st } = await fetch("/api/admin/status").then((r) => r.json());
+          if (!st.admin) {
+            const ok = await window.showAdminUnlock();
+            if (!ok) return;
+          }
+          const li = btn.closest(".categories-list-item");
+          const id = parseInt(li.dataset.id, 10);
+          const cur = li.dataset.name || "";
+          const name = window.prompt("Rename category", cur);
+          if (!name || !name.trim() || name.trim() === cur) return;
+          const { data } = await postJson(`/api/categories/${id}`, { action: "rename", name: name.trim() });
+          if (!data.success) {
+            statusEl.textContent = data.error || "Failed";
+            statusEl.className = "save-status error";
+            return;
+          }
+          window.location.reload();
+        });
+      });
+
+      document.querySelectorAll(".js-delete-cat").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          if (btn.disabled) return;
+          const { data: st } = await fetch("/api/admin/status").then((r) => r.json());
+          if (!st.admin) {
+            const ok = await window.showAdminUnlock();
+            if (!ok) return;
+          }
+          const li = btn.closest(".categories-list-item");
+          const id = parseInt(li.dataset.id, 10);
+          if (!window.confirm("Delete this empty category?")) return;
+          const { data } = await postJson(`/api/categories/${id}`, { action: "delete" });
+          if (!data.success) {
+            statusEl.textContent = data.error || "Failed";
+            statusEl.className = "save-status error";
+            return;
+          }
+          window.location.reload();
+        });
+      });
+      return;
+    }
+
+    const list = byId("hubProductList");
+    const searchInput = byId("hubSearchInput");
+    const categoryFilter = byId("hubCategoryFilter");
+    const statusFilter = byId("hubStatusFilter");
+    if (list && searchInput) {
+      const items = Array.from(list.querySelectorAll(".products-list-item"));
+      const apply = () => {
+        const q = (searchInput.value || "").toLowerCase().trim();
+        const c = (categoryFilter.value || "").toLowerCase();
+        const s = (statusFilter.value || "").toLowerCase();
+        items.forEach((row) => {
+          const hay = `${row.dataset.stock} ${row.dataset.name} ${row.dataset.category}`;
+          const qOk = !q || hay.includes(q);
+          const cOk = !c || row.dataset.category === c;
+          const sOk = !s || (s === "pushed" ? row.dataset.pushed === "1" : row.dataset.status === s);
+          row.classList.toggle("hidden", !(qOk && cOk && sOk));
+        });
+      };
+      searchInput.addEventListener("input", apply);
+      categoryFilter.addEventListener("change", apply);
+      statusFilter.addEventListener("change", apply);
+      apply();
+    }
+
+    document.querySelectorAll(".js-admin-add-product").forEach((a) => {
+      a.addEventListener("click", async (e) => {
+        const { data } = await fetch("/api/admin/status").then((r) => r.json());
+        if (!data.admin) {
+          e.preventDefault();
+          const ok = await window.showAdminUnlock();
+          if (ok) window.location.href = a.getAttribute("href");
+        }
+      });
+    });
+
+    const submit = byId("createProductSubmitBtn");
+    if (submit) {
+      const err = byId("newProductError");
+      submit.addEventListener("click", async () => {
+        err.textContent = "";
+        const payload = {
+          stock_code: byId("new_stock_code").value,
+          name: byId("new_name").value,
+          category: byId("new_category").value,
+        };
+        let { res, data } = await window.fetchWithAdmin("/api/products/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!data.success) {
+          err.textContent = data.error || "Could not create product";
+          return;
+        }
+        window.location.href = `/products?selected=${data.id}`;
+      });
+    }
+  };
+
   window.initProductPage = function () {
     const page = byId("productPage");
     if (!page) return;
     const data = JSON.parse(byId("productData").textContent);
     const productId = data.id;
+    const embed = page.dataset.embed === "1";
+    if (embed && window.parent && window.parent !== window) {
+      if (typeof window.parent.showAdminUnlock === "function") {
+        window.showAdminUnlock = window.parent.showAdminUnlock.bind(window.parent);
+      }
+      if (typeof window.parent.fetchWithAdmin === "function") {
+        window.fetchWithAdmin = window.parent.fetchWithAdmin.bind(window.parent);
+      }
+    }
     let productStatus = data.status === "done" ? "done" : "pending";
     let photos = Array.isArray(data.photos) ? data.photos.slice() : [];
-    let knownInbox = new Set();
     let dragged = null;
     const lightbox = createLightbox();
+
+    const syncDataLabels = () => {
+      const sc = byId("stock_code").value;
+      const nm = byId("name").value;
+      const cat = byId("category").value;
+      const sup = byId("supplier").value;
+      const dh = byId("displayStockHeader");
+      const nh = byId("displayNameHeader");
+      const ch = byId("displayCategoryHeader");
+      if (dh) dh.textContent = sc;
+      if (nh) nh.textContent = nm;
+      if (ch) ch.textContent = cat;
+      data.stock_code = sc;
+      data.name = nm;
+      data.category = cat;
+      data.supplier = sup;
+    };
 
     const by = {
       photoGrid: byId("photoGrid"),
@@ -178,21 +433,28 @@
       optionalToggle: byId("toggleOptionalFields"),
     };
 
-    const fields = ["web_description", "sell_price", "compare_price", "tags", "notes", "shopify_sku"].map(byId);
+    const fields = ["stock_code", "name", "category", "supplier", "web_description", "sell_price", "compare_price", "tags", "notes", "shopify_sku"].map(byId);
     const setStatusMsg = (msg, type) => {
       by.saveStatus.textContent = msg;
       by.saveStatus.className = `save-status ${type || ""}`.trim();
     };
-    const collectPayload = () => ({
-      web_description: byId("web_description").value,
-      sell_price: byId("sell_price").value,
-      compare_price: byId("compare_price").value,
-      tags: byId("tags").value,
-      notes: byId("notes").value,
-      status: productStatus,
-      shopify_sku: byId("shopify_sku").value,
-      photos: photos.slice(),
-    });
+    const collectPayload = () => {
+      syncDataLabels();
+      return {
+        stock_code: byId("stock_code").value,
+        name: byId("name").value,
+        category: byId("category").value,
+        supplier: byId("supplier").value,
+        web_description: byId("web_description").value,
+        sell_price: byId("sell_price").value,
+        compare_price: byId("compare_price").value,
+        tags: byId("tags").value,
+        notes: byId("notes").value,
+        status: productStatus,
+        shopify_sku: byId("shopify_sku").value,
+        photos: photos.slice(),
+      };
+    };
 
     const saveProduct = async (redirectAfter) => {
       setStatusMsg("Saving...");
@@ -201,23 +463,28 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(collectPayload()),
       });
-      const data = await res.json();
-      if (!data.success) {
-        setStatusMsg("Save failed", "error");
+      const respData = await res.json();
+      if (!respData.success) {
+        setStatusMsg(respData.error || "Save failed", "error");
         return false;
       }
       setStatusMsg("Saved!", "ok");
       document.body.classList.add("flash-green");
       setTimeout(() => document.body.classList.remove("flash-green"), 450);
-      if (redirectAfter) setTimeout(() => { window.location.href = "/"; }, 800);
+      if (redirectAfter) {
+        setTimeout(() => {
+          if (embed) window.parent.location.href = `/products?selected=${productId}`;
+          else window.location.href = "/products";
+        }, 800);
+      }
       return true;
     };
 
     const pollPhoto = (filename) => {
       const timer = setInterval(async () => {
         const res = await fetch(`/api/photo-status/${encodeURIComponent(filename)}`);
-        const data = await res.json();
-        if (data.status === "done") {
+        const pdata = await res.json();
+        if (pdata.status === "done") {
           clearInterval(timer);
           renderPhotoGrid();
         }
@@ -230,8 +497,8 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: name, product_id: productId }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const pdata = await res.json();
+      if (pdata.success) {
         photos = photos.filter((p) => p !== name);
         renderPhotoGrid();
       }
@@ -290,14 +557,14 @@
         fd.append("photo", file);
         fd.append("product_id", String(productId));
         const res = await fetch("/api/upload-photo", { method: "POST", body: fd });
-        const data = await res.json();
-        if (!data.success) {
-          by.uploadError.textContent = data.error || "Upload failed";
+        const pdata = await res.json();
+        if (!pdata.success) {
+          by.uploadError.textContent = pdata.error || "Upload failed";
           continue;
         }
-        photos.push(data.filename);
+        photos.push(pdata.filename);
         renderPhotoGrid();
-        if (data.processing) pollPhoto(data.filename);
+        if (pdata.processing) pollPhoto(pdata.filename);
       }
     };
 
@@ -313,11 +580,11 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: name, product_id: productId }),
       });
-      const data = await res.json();
-      if (data.success) {
-        photos.push(data.filename);
+      const pdata = await res.json();
+      if (pdata.success) {
+        photos.push(pdata.filename);
         renderPhotoGrid();
-        if (data.processing) pollPhoto(data.filename);
+        if (pdata.processing) pollPhoto(pdata.filename);
         pollInbox();
       }
     };
@@ -354,9 +621,8 @@
     };
     const pollInbox = async () => {
       const res = await fetch("/api/check-inbox");
-      const data = await res.json();
-      const files = data.files || [];
-      knownInbox = new Set(files);
+      const pdata = await res.json();
+      const files = pdata.files || [];
       renderInbox(files);
     };
 
@@ -378,8 +644,14 @@
       by.statusToggle.textContent = productStatus === "done" ? "DONE ✓" : "PENDING";
     });
     by.saveBtn.addEventListener("click", async () => { await saveProduct(true); });
-    by.prevBtn.addEventListener("click", async () => { await saveProduct(false); window.location.href = `/product/${by.prevBtn.dataset.id}`; });
-    by.nextBtn.addEventListener("click", async () => { await saveProduct(false); window.location.href = `/product/${by.nextBtn.dataset.id}`; });
+
+    const nav = async (hubHref, prodId) => {
+      await saveProduct(false);
+      if (embed && hubHref) window.parent.location.href = hubHref;
+      else window.location.href = `/product/${prodId}`;
+    };
+    by.prevBtn.addEventListener("click", async () => nav(by.prevBtn.dataset.hubHref, by.prevBtn.dataset.id));
+    by.nextBtn.addEventListener("click", async () => nav(by.nextBtn.dataset.hubHref, by.nextBtn.dataset.id));
 
     if (by.optionalToggle) {
       by.optionalToggle.addEventListener("click", (e) => {
@@ -391,9 +663,10 @@
 
     const skuInput = byId("shopify_sku");
     byId("regenSkuBtn").addEventListener("click", () => {
-      const category = (data.category || "").replace(/[^A-Za-z]/g, "");
+      syncDataLabels();
+      const category = (byId("category").value || "").replace(/[^A-Za-z]/g, "");
       const prefix = category ? category.slice(0, 3).toUpperCase() : "GEN";
-      skuInput.value = `${prefix}-${data.stock_code}`;
+      skuInput.value = `${prefix}-${byId("stock_code").value}`;
       autoSave();
     });
 
@@ -436,6 +709,23 @@
           by.pushOneStatus.className = "save-status error";
           by.pushOneBtn.disabled = false;
         }
+      });
+    }
+
+    const delBtn = byId("deleteProductBtn");
+    const delStatus = byId("deleteProductStatus");
+    if (delBtn) {
+      delBtn.addEventListener("click", async () => {
+        if (!window.confirm("Permanently delete this product?")) return;
+        delStatus.textContent = "";
+        const { data } = await window.fetchWithAdmin(`/api/products/${productId}`, { method: "DELETE" });
+        if (!data.success) {
+          delStatus.textContent = data.error || "Delete failed";
+          delStatus.className = "save-status error";
+          return;
+        }
+        if (embed) window.parent.location.href = "/products";
+        else window.location.href = "/products";
       });
     }
 

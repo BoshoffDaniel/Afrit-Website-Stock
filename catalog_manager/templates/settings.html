@@ -1,22 +1,33 @@
 {% extends "base.html" %}
 {% block title %}Settings - Catalog Manager{% endblock %}
 {% block content %}
-<a href="/" class="back-dashboard-btn">← Back to Dashboard</a>
-<section class="panel settings-panel">
-  <h2>Shopify Connection</h2>
-  <p class="sub">These Shopify settings apply only to: <strong>{{ current_catalogue_name }}</strong></p>
-  <div class="form-field"><label>Store URL</label><input type="text" id="shopify_store_url" placeholder="yourstore.myshopify.com" value="{{ shopify_store_url }}"></div>
-  <div class="form-field">
-    <label>API Key</label>
-    <div class="row-2"><input type="password" id="shopify_api_key" value="{{ shopify_api_key }}"><button class="btn btn-light" id="toggleApiKeyBtn" type="button">Show/Hide</button></div>
-  </div>
-  <div class="row-2">
-    <button id="saveSettingsBtn" class="btn btn-green">Save Settings</button>
-    <button id="testShopifyBtn" class="btn btn-light">Test Shopify Connection</button>
-  </div>
-  <p id="settingsStatus" class="save-status"></p>
-</section>
-
+  {% if not admin_unlocked %}
+  <section class="panel settings-gate">
+    <h1>Settings</h1>
+    <p class="sub">Settings are restricted to administrators. Unlock with the admin password to view and edit.</p>
+    <p class="sub">Default password is set on first install (change via database <code>admin_password_hash</code> if needed).</p>
+    <button type="button" class="btn btn-green" id="openSettingsGateBtn"><span class="admin-lock-inline" aria-hidden="true">🔒</span> Unlock settings</button>
+    <p id="settingsGateMsg" class="save-status"></p>
+  </section>
+  {% else %}
+  <a href="/" class="back-dashboard-btn">← Back to Dashboard</a>
+  <section class="panel settings-panel">
+    <h2>Shopify Connection</h2>
+    <p class="shopify-connection-status {% if shopify_configured %}shopify-connection-status--ok{% else %}shopify-connection-status--bad{% endif %}">
+      {% if shopify_configured %}Connected{% else %}Not connected{% endif %}
+    </p>
+    <p class="sub">These Shopify settings apply only to: <strong>{{ current_catalogue_name }}</strong></p>
+    <div class="form-field"><label>Store URL</label><input type="text" id="shopify_store_url" placeholder="yourstore.myshopify.com" value="{{ shopify_store_url }}"></div>
+    <div class="form-field">
+      <label>API Key</label>
+      <div class="row-2"><input type="password" id="shopify_api_key" value="{{ shopify_api_key }}"><button class="btn btn-light" id="toggleApiKeyBtn" type="button">Show/Hide</button></div>
+    </div>
+    <div class="row-2">
+      <button id="saveSettingsBtn" class="btn btn-green"><span class="admin-lock-inline" aria-hidden="true">🔒</span> Save Settings</button>
+      <button id="testShopifyBtn" class="btn btn-light">Test Shopify Connection</button>
+    </div>
+    <p id="settingsStatus" class="save-status"></p>
+  </section>
 <section class="panel settings-panel">
   <h2>AI Description</h2>
   <div class="form-field">
@@ -46,5 +57,6 @@
   <p class="sub">WooCommerce integration is planned for a later phase.</p>
   <p class="sub">For now, only Shopify push is active.</p>
 </section>
+{% endif %}
 {% endblock %}
 {% block scripts %}<script>initSettingsPage();</script>{% endblock %}

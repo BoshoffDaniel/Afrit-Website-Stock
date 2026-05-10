@@ -4,18 +4,23 @@ import re
 import sqlite3
 import shutil
 import threading
+import time
 import traceback
 from datetime import datetime
 
 import requests
-from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_file, session, url_for
 from PIL import Image
+from werkzeug.security import check_password_hash
 
 from database import (
+    ensure_category_row,
     get_catalogue_setting,
     get_conn,
     get_setting,
     init_db,
+    list_categories_with_counts,
+    list_category_labels,
     set_catalogue_setting,
     set_setting,
 )
@@ -37,6 +42,7 @@ app = Flask(
     template_folder=os.path.join(BASE_DIR, "templates"),
     static_folder=os.path.join(DATA_DIR, "static"),
 )
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "catalog-manager-dev-secret-change-in-production")
 
 UPLOAD_DIR = os.path.join(DATA_DIR, "static", "uploads")
 INBOX_DIR = os.path.join(DATA_DIR, "camera_inbox")
@@ -152,6 +158,14 @@ def get_current_catalogue_id():
     return int(catalogue_id)
 
 
+def is_admin_session():
+    until = session.get("admin_until")
+    try:
+        return float(until) > time.time()
+    except (TypeError, ValueError):
+        return False
+
+
 def get_counts(catalogue_id=None):
     conn = get_conn()
     cur = conn.cursor()
@@ -180,10 +194,16 @@ def inject_catalogue_state():
     catalogues = list_catalogues()
     current_id = get_current_catalogue_id()
     current = next((c for c in catalogues if c["id"] == current_id), None)
+    shopify_ok = bool(
+        (get_catalogue_setting(current_id, "shopify_store_url") or "").strip()
+        and (get_catalogue_setting(current_id, "shopify_api_key") or "").strip()
+    )
     return {
         "available_catalogues": catalogues,
         "current_catalogue_id": current_id,
         "current_catalogue_name": (current or {}).get("name", "Current Catalogue"),
+        "shopify_configured": shopify_ok,
+        "admin_unlocked": is_admin_session(),
     }
 
 
@@ -310,10 +330,6 @@ def index():
     categories = [r[0] for r in cur.fetchall()]
     conn.close()
     stats = get_counts(catalogue_id)
-    configured = bool(
-        (get_catalogue_setting(catalogue_id, "shopify_store_url") or "").strip()
-        and (get_catalogue_setting(catalogue_id, "shopify_api_key") or "").strip()
-    )
     ready_to_push = len([p for p in products if p["status"] == "done" and not p["shopify_pushed"]])
     shown_count = len(products)
     return render_template(
@@ -321,41 +337,83 @@ def index():
         products=products,
         categories=categories,
         stats=stats,
-        configured=configured,
         ready_to_push=ready_to_push,
         shown_count=shown_count,
         target_total=int(get_catalogue_setting(catalogue_id, "products_total_target") or "2036"),
     )
 
 
-@app.route("/product/new", methods=["GET", "POST"])
-def create_product():
+@app.route("/products")
+def products_hub():
     catalogue_id = get_current_catalogue_id()
+    tab = (request.args.get("tab") or "products").strip().lower()
+    if tab not in ("products", "categories"):
+        tab = "products"
+    selected_id = request.args.get("selected", type=int)
+    is_new = request.args.get("new") == "1"
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT DISTINCT category FROM products WHERE catalogue_id = ? AND category IS NOT NULL AND TRIM(category) != '' ORDER BY category",
+        "SELECT * FROM products WHERE catalogue_id = ? ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END, stock_code ASC",
         (catalogue_id,),
     )
-    categories = [r[0] for r in cur.fetchall()]
+    products = [product_to_dict(r) for r in cur.fetchall()]
+    conn.close()
+    category_options = list_category_labels(catalogue_id)
+    categories_full = list_categories_with_counts(catalogue_id) if tab == "categories" else []
+    ids = {p["id"] for p in products}
+    if selected_id is not None and selected_id not in ids:
+        selected_id = None
+    return render_template(
+        "products_hub.html",
+        products=products,
+        tab=tab,
+        selected_id=selected_id,
+        is_new=is_new and not selected_id,
+        category_options=category_options,
+        categories_full=categories_full,
+    )
 
-    if request.method == "GET":
-        conn.close()
-        return render_template("add_product.html", categories=categories, error="")
 
-    stock_code = (request.form.get("stock_code") or "").strip()
-    name = (request.form.get("name") or "").strip()
-    category = (request.form.get("category") or "").strip()
+@app.route("/activity")
+def activity_page():
+    return render_template("activity.html")
 
+
+@app.route("/api/admin/unlock", methods=["POST"])
+def api_admin_unlock():
+    payload = request.get_json(silent=True) or {}
+    password = (payload.get("password") or "").strip()
+    stored = (get_setting("admin_password_hash") or "").strip()
+    if stored and check_password_hash(stored, password):
+        session["admin_until"] = time.time() + 30 * 60
+        return jsonify({"success": True})
+    return jsonify({"success": False, "error": "Incorrect password"}), 401
+
+
+@app.route("/api/admin/status")
+def api_admin_status():
+    until = session.get("admin_until")
+    try:
+        exp = max(0, float(until) - time.time())
+    except (TypeError, ValueError):
+        exp = 0
+    return jsonify({"admin": is_admin_session(), "expires_in": exp})
+
+
+@app.route("/api/products/create", methods=["POST"])
+def api_create_product():
+    if not is_admin_session():
+        return jsonify({"success": False, "need_admin": True}), 403
+    catalogue_id = get_current_catalogue_id()
+    payload = request.get_json(silent=True) or {}
+    stock_code = (payload.get("stock_code") or "").strip()
+    name = (payload.get("name") or "").strip()
+    category = (payload.get("category") or "").strip()
     if not stock_code or not name:
-        conn.close()
-        return render_template(
-            "add_product.html",
-            categories=categories,
-            error="Stock code and name are required.",
-            form_data={"stock_code": stock_code, "name": name, "category": category},
-        )
-
+        return jsonify({"success": False, "error": "Stock code and name are required."}), 400
+    conn = get_conn()
+    cur = conn.cursor()
     try:
         handle = slugify_text(name) or slugify_text(stock_code)
         shopify_sku = generate_shopify_sku(category, stock_code)
@@ -367,17 +425,117 @@ def create_product():
             (stock_code, name, category, handle, shopify_sku, catalogue_id),
         )
         product_id = cur.lastrowid
+        ensure_category_row(catalogue_id, category)
         conn.commit()
         conn.close()
-        return redirect(url_for("product_page", product_id=product_id))
+        return jsonify({"success": True, "id": product_id})
     except sqlite3.IntegrityError:
         conn.close()
-        return render_template(
-            "add_product.html",
-            categories=categories,
-            error=f"Stock code '{stock_code}' already exists.",
-            form_data={"stock_code": stock_code, "name": name, "category": category},
+        return jsonify({"success": False, "error": f"Stock code '{stock_code}' already exists."}), 400
+
+
+@app.route("/api/products/<int:product_id>", methods=["DELETE"])
+def api_delete_product(product_id):
+    if not is_admin_session():
+        return jsonify({"success": False, "need_admin": True}), 403
+    catalogue_id = get_current_catalogue_id()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT photos FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"success": False, "error": "Product not found"}), 404
+    photos = parse_photos(row["photos"])
+    cur.execute("DELETE FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
+    conn.commit()
+    conn.close()
+    for fname in photos:
+        path = os.path.join(UPLOAD_DIR, os.path.basename(fname))
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return jsonify({"success": True})
+
+
+@app.route("/api/categories", methods=["POST"])
+def api_categories_add():
+    if not is_admin_session():
+        return jsonify({"success": False, "need_admin": True}), 403
+    catalogue_id = get_current_catalogue_id()
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "Name is required"}), 400
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO categories (catalogue_id, name) VALUES (?, ?)",
+            (catalogue_id, name),
         )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"success": False, "error": "Category already exists"}), 400
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/categories/<int:cat_id>", methods=["POST"])
+def api_categories_update(cat_id):
+    if not is_admin_session():
+        return jsonify({"success": False, "need_admin": True}), 403
+    catalogue_id = get_current_catalogue_id()
+    payload = request.get_json(silent=True) or {}
+    action = (payload.get("action") or "").strip().lower()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, catalogue_id FROM categories WHERE id = ?", (cat_id,))
+    row = cur.fetchone()
+    if not row or int(row["catalogue_id"]) != catalogue_id:
+        conn.close()
+        return jsonify({"success": False, "error": "Category not found"}), 404
+    old_name = row["name"]
+    if action == "rename":
+        new_name = (payload.get("name") or "").strip()
+        if not new_name:
+            conn.close()
+            return jsonify({"success": False, "error": "Name is required"}), 400
+        try:
+            cur.execute("UPDATE categories SET name = ? WHERE id = ?", (new_name, cat_id))
+            cur.execute(
+                "UPDATE products SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE catalogue_id = ? AND TRIM(IFNULL(category,'')) = ?",
+                (new_name, catalogue_id, old_name),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": "A category with that name already exists"}), 400
+        conn.close()
+        return jsonify({"success": True})
+    if action == "delete":
+        cur.execute(
+            "SELECT COUNT(*) FROM products WHERE catalogue_id = ? AND TRIM(IFNULL(category,'')) = ?",
+            (catalogue_id, old_name),
+        )
+        n = cur.fetchone()[0]
+        if n > 0:
+            conn.close()
+            return jsonify({"success": False, "error": "Cannot delete a category that still has products"}), 400
+        cur.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    conn.close()
+    return jsonify({"success": False, "error": "Invalid action"}), 400
+
+
+@app.route("/product/new", methods=["GET", "POST"])
+def create_product():
+    return redirect(url_for("products_hub", new="1"))
 
 
 @app.route("/setup")
@@ -469,6 +627,19 @@ def import_catalogue_excel():
         imported, skipped, summary = import_excel(tmp_path, catalogue_id=catalogue_id, update_existing=update_existing)
         updated = int(summary.get("updated", 0))
         backfill_shopify_sku()
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO categories (catalogue_id, name)
+            SELECT DISTINCT catalogue_id, TRIM(category)
+            FROM products
+            WHERE catalogue_id = ? AND category IS NOT NULL AND TRIM(category) != ''
+            """,
+            (catalogue_id,),
+        )
+        conn.commit()
+        conn.close()
         reason_parts = []
         if summary.get("missing_stock_code"):
             reason_parts.append(f"{summary['missing_stock_code']} missing stock code")
@@ -512,6 +683,15 @@ def setup_import():
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("UPDATE products SET catalogue_id = ? WHERE catalogue_id IS NULL", (current_catalogue_id,))
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO categories (catalogue_id, name)
+            SELECT DISTINCT catalogue_id, TRIM(category)
+            FROM products
+            WHERE catalogue_id = ? AND category IS NOT NULL AND TRIM(category) != ''
+            """,
+            (current_catalogue_id,),
+        )
         conn.commit()
         conn.close()
         backfill_shopify_sku()
@@ -552,8 +732,11 @@ def product_page(product_id):
     )
     groq_configured = bool((get_setting("groq_api_key") or "").strip())
     needs_repush = bool(product["shopify_pushed"] and product["shopify_pushed_at"] and product["updated_at"] and product["updated_at"] > product["shopify_pushed_at"])
+    embed = request.args.get("embed") == "1"
+    category_options = list_category_labels(catalogue_id)
+    template_name = "product_embed.html" if embed else "product.html"
     return render_template(
-        "product.html",
+        template_name,
         product=product,
         previous=prev_item,
         next_item=next_item,
@@ -563,6 +746,8 @@ def product_page(product_id):
         shopify_configured=configured,
         groq_configured=groq_configured,
         needs_repush=needs_repush,
+        embed=embed,
+        category_options=category_options,
     )
 
 
@@ -576,16 +761,47 @@ def save_product(product_id):
     status = payload.get("status", "pending")
     if status not in ("pending", "done"):
         status = "pending"
+    name = (payload.get("name") or "").strip()
+    category = (payload.get("category") or "").strip()
+    supplier = (payload.get("supplier") or "").strip()
+    stock_code_new = (payload.get("stock_code") or "").strip()
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
+        "SELECT stock_code, name FROM products WHERE id = ? AND catalogue_id = ?",
+        (product_id, catalogue_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"success": False, "error": "Product not found"}), 404
+    old_code = row["stock_code"]
+    old_name = row["name"]
+    if not stock_code_new:
+        stock_code_new = old_code
+    if stock_code_new != old_code:
+        cur.execute(
+            "SELECT 1 FROM products WHERE stock_code = ? AND id != ?",
+            (stock_code_new, product_id),
+        )
+        if cur.fetchone():
+            conn.close()
+            return jsonify({"success": False, "error": "Stock code already in use"}), 400
+    display_name = name if name else old_name
+    handle = slugify_text(display_name) or slugify_text(stock_code_new)
+    cur.execute(
         """
         UPDATE products
-           SET web_description = ?, sell_price = ?, compare_price = ?, tags = ?, notes = ?,
-               status = ?, photos = ?, shopify_sku = ?, updated_at = CURRENT_TIMESTAMP
+           SET stock_code = ?, name = ?, category = ?, supplier = ?,
+               web_description = ?, sell_price = ?, compare_price = ?, tags = ?, notes = ?,
+               status = ?, photos = ?, shopify_sku = ?, shopify_handle = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND catalogue_id = ?
         """,
         (
+            stock_code_new,
+            display_name,
+            category,
+            supplier,
             payload.get("web_description", ""),
             payload.get("sell_price") if payload.get("sell_price") not in ("", None) else None,
             payload.get("compare_price") if payload.get("compare_price") not in ("", None) else None,
@@ -594,10 +810,12 @@ def save_product(product_id):
             status,
             json.dumps([os.path.basename(p) for p in photos]),
             (payload.get("shopify_sku") or "").strip() or None,
+            handle,
             product_id,
             catalogue_id,
         ),
     )
+    ensure_category_row(catalogue_id, category)
     conn.commit()
     conn.close()
     return jsonify({"success": True})
@@ -787,18 +1005,25 @@ def api_stats():
 @app.route("/settings")
 def settings_page():
     catalogue_id = get_current_catalogue_id()
+    configured = bool(
+        (get_catalogue_setting(catalogue_id, "shopify_store_url") or "").strip()
+        and (get_catalogue_setting(catalogue_id, "shopify_api_key") or "").strip()
+    )
     return render_template(
         "settings.html",
         shopify_store_url=get_catalogue_setting(catalogue_id, "shopify_store_url") or "",
         shopify_api_key=get_catalogue_setting(catalogue_id, "shopify_api_key") or "",
         groq_api_key=get_setting("groq_api_key") or "",
         products_total_target=get_catalogue_setting(catalogue_id, "products_total_target") or "2036",
+        shopify_configured=configured,
     )
 
 
 @app.route("/settings/save", methods=["POST"])
 def settings_save():
     try:
+        if not is_admin_session():
+            return jsonify({"success": False, "need_admin": True}), 403
         catalogue_id = get_current_catalogue_id()
         payload = request.get_json(silent=True) or {}
         set_catalogue_setting(catalogue_id, "shopify_store_url", (payload.get("shopify_store_url") or "").strip())

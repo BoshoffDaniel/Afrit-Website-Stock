@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ product.stock_code }} - Catalog Manager</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260511nav') }}">
+</head>
+<body class="product-embed-root">
+{% include "_product_body.html" %}
+<script src="{{ url_for('static', filename='app.js', v='20260511nav') }}"></script>
+<script>initProductPage();</script>
+</body>
+</html>

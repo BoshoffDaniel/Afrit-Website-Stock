@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Products - Catalog Manager{% endblock %}
+{% block content %}
+<div class="products-hub">
+  <header class="products-hub-head">
+    <div>
+      <div class="crumbs">Home / Products / {{ current_catalogue_name }}</div>
+      <h1>Products</h1>
+      <p class="sub">Manage products and categories for this catalogue.</p>
+    </div>
+  </header>
+
+  <div class="products-hub-tabs" role="tablist">
+    <a href="{{ url_for('products_hub', tab='products') }}" class="hub-tab {% if tab == 'products' %}hub-tab--active{% endif %}" role="tab">Products</a>
+    <a href="{{ url_for('products_hub', tab='categories') }}" class="hub-tab {% if tab == 'categories' %}hub-tab--active{% endif %}" role="tab">Categories</a>
+  </div>
+
+  {% if tab == 'categories' %}
+  <section class="panel categories-admin-panel">
+    <div class="categories-toolbar">
+      <h2 class="section-title-inline">Categories</h2>
+      <button type="button" class="btn btn-green js-add-category-btn" id="addCategoryBtn">
+        <span class="admin-lock-inline" aria-hidden="true">🔒</span> + Add Category
+      </button>
+    </div>
+    <p class="sub">Rename or delete categories. Deleting is only allowed when no products use that category.</p>
+    <ul class="categories-list" id="categoriesList">
+      {% for c in categories_full %}
+      <li class="categories-list-item" data-id="{{ c.id }}" data-name="{{ c.name|e }}" data-count="{{ c.product_count }}">
+        <span class="categories-list-label"><strong>{{ c.name }}</strong> ({{ c.product_count }} product{% if c.product_count != 1 %}s{% endif %})</span>
+        <span class="categories-list-actions">
+          <button type="button" class="btn btn-light btn-small js-rename-cat">🔒 Rename</button>
+          <button type="button" class="btn btn-red btn-small js-delete-cat" {% if c.product_count > 0 %}disabled title="Remove products from this category first"{% endif %}>🔒 Delete</button>
+        </span>
+      </li>
+      {% else %}
+      <li class="sub">No categories yet. Add one above, or create products with a category name.</li>
+      {% endfor %}
+    </ul>
+    <p id="categoriesStatus" class="save-status"></p>
+  </section>
+
+  {% else %}
+  <div class="products-split">
+    <aside class="products-list-panel">
+      <div class="products-list-toolbar">
+        <a href="{{ url_for('products_hub', new='1') }}" class="btn btn-green btn-block js-admin-add-product">
+          <span class="admin-lock-inline" aria-hidden="true">🔒</span> + Add Product
+        </a>
+      </div>
+      <div class="products-list-filters">
+        <input type="text" id="hubSearchInput" class="hub-search" placeholder="Search stock code, name, category…" autocomplete="off">
+        <div class="filter-group filter-group--stack">
+          <label class="filter-label" for="hubCategoryFilter">Category</label>
+          <select id="hubCategoryFilter">
+            <option value="">All</option>
+            {% for c in category_options %}<option value="{{ c|lower }}">{{ c }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="filter-group filter-group--stack">
+          <label class="filter-label" for="hubStatusFilter">Status</label>
+          <select id="hubStatusFilter">
+            <option value="">All</option>
+            <option value="pending">Pending</option>
+            <option value="done">Done</option>
+            <option value="pushed">Pushed</option>
+          </select>
+        </div>
+      </div>
+      <ul class="products-list" id="hubProductList">
+        {% for p in products %}
+        <li class="products-list-item {% if selected_id == p.id %}products-list-item--active{% endif %}"
+            data-id="{{ p.id }}"
+            data-stock="{{ p.stock_code|lower }}"
+            data-name="{{ p.name|lower }}"
+            data-category="{{ (p.category or '')|lower }}"
+            data-status="{{ p.status }}"
+            data-pushed="{{ p.shopify_pushed }}">
+          <a class="products-list-link" href="{{ url_for('products_hub', selected=p.id) }}">
+            <span class="products-list-thumb">
+              {% if p.photos and p.photos|length > 0 %}
+              <img src="{{ url_for('static', filename='uploads/' ~ p.photos[0]) }}" alt="">
+              {% else %}
+              <span class="dash-thumb placeholder">📷</span>
+              {% endif %}
+            </span>
+            <span class="products-list-body">
+              <span class="mono products-list-code">{{ p.stock_code }}</span>
+              <span class="products-list-name">{{ p.name }}</span>
+              <span class="badge badge-{{ p.status }}">{{ p.status|upper }}</span>
+            </span>
+          </a>
+        </li>
+        {% else %}
+        <li class="sub products-list-empty">No products yet. Use <strong>+ Add Product</strong> or import from Manage Catalogues.</li>
+        {% endfor %}
+      </ul>
+    </aside>
+
+    <div class="products-detail-panel">
+      {% if is_new %}
+      <div class="panel products-new-panel" id="newProductPanel">
+        <h2><span class="admin-lock-inline" aria-hidden="true">🔒</span> New product</h2>
+        <p class="sub">Stock code and name are required. New category names are saved when you create the product.</p>
+        <div class="form-field">
+          <label for="new_stock_code">Stock code</label>
+          <input id="new_stock_code" type="text" autocomplete="off">
+        </div>
+        <div class="form-field">
+          <label for="new_name">Name</label>
+          <input id="new_name" type="text" autocomplete="off">
+        </div>
+        <div class="form-field">
+          <label for="new_category">Category</label>
+          <input id="new_category" type="text" list="hubCategoryDatalist" placeholder="Type or pick existing" autocomplete="off">
+          <datalist id="hubCategoryDatalist">
+            {% for c in category_options %}<option value="{{ c }}">{% endfor %}
+          </datalist>
+        </div>
+        <p id="newProductError" class="save-status error"></p>
+        <button type="button" class="btn btn-green btn-block" id="createProductSubmitBtn">Create product</button>
+      </div>
+      {% elif selected_id %}
+      <iframe class="product-embed-frame" title="Product editor" src="{{ url_for('product_page', product_id=selected_id) }}?embed=1"></iframe>
+      {% else %}
+      <div class="products-detail-empty panel">
+        <h3>Select a product</h3>
+        <p class="sub">Choose a product from the list, or create a new one.</p>
+        <a class="btn btn-green" href="{{ url_for('products_hub', new='1') }}"><span class="admin-lock-inline" aria-hidden="true">🔒</span> + Add Product</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  initProductsHub({ tab: {{ tab|tojson }}, isNew: {{ is_new|tojson }} });
+</script>
+{% endblock %}

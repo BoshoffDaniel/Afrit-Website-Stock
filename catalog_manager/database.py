@@ -1,6 +1,8 @@
 import os
 import sqlite3
 
+from werkzeug.security import generate_password_hash
+
 DATA_DIR = os.environ.get("CATALOG_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(DATA_DIR, "catalog.db")
 
@@ -68,6 +70,17 @@ def init_db():
         );
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            catalogue_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            UNIQUE (catalogue_id, name),
+            FOREIGN KEY (catalogue_id) REFERENCES catalogues(id)
+        );
+        """
+    )
     cur.execute("PRAGMA table_info(products)")
     existing_columns = {row[1] for row in cur.fetchall()}
     migrations = [
@@ -85,9 +98,16 @@ def init_db():
         "shopify_api_key": "",
         "groq_api_key": "",
         "products_total_target": "2036",
+        "admin_password_hash": generate_password_hash("kodexa2024"),
     }
     for key, value in default_settings.items():
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    cur.execute("SELECT 1 FROM settings WHERE key = 'admin_password_hash'")
+    if not cur.fetchone():
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            ("admin_password_hash", generate_password_hash("kodexa2024")),
+        )
 
     cur.execute("SELECT id FROM catalogues ORDER BY id ASC LIMIT 1")
     first_catalogue = cur.fetchone()
@@ -114,6 +134,15 @@ def init_db():
             """,
             (default_catalogue_id, key, key),
         )
+
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO categories (catalogue_id, name)
+        SELECT DISTINCT catalogue_id, TRIM(category)
+        FROM products
+        WHERE category IS NOT NULL AND TRIM(category) != ''
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -151,6 +180,52 @@ def get_catalogue_setting(catalogue_id, key):
     row = cur.fetchone()
     conn.close()
     return row["value"] if row else None
+
+
+def ensure_category_row(catalogue_id, name):
+    """Ensure a category row exists when a product uses this name."""
+    label = (name or "").strip()
+    if not label:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO categories (catalogue_id, name) VALUES (?, ?)",
+        (int(catalogue_id), label),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_category_labels(catalogue_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT name FROM categories WHERE catalogue_id = ? ORDER BY name COLLATE NOCASE",
+        (int(catalogue_id),),
+    )
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def list_categories_with_counts(catalogue_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.id, c.name,
+               (SELECT COUNT(*) FROM products p
+                WHERE p.catalogue_id = c.catalogue_id AND TRIM(IFNULL(p.category,'')) = c.name) AS product_count
+        FROM categories c
+        WHERE c.catalogue_id = ?
+        ORDER BY c.name COLLATE NOCASE
+        """,
+        (int(catalogue_id),),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
 
 
 def set_catalogue_setting(catalogue_id, key, value):

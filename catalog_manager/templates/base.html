@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Catalog Manager{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260506a') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260511nav') }}">
 </head>
 <body>
   <div class="app-shell">
@@ -15,12 +15,9 @@
       </a>
       <nav class="sidebar-nav">
         <a class="sidebar-item {% if request.path == '/' %}active{% endif %}" href="{{ url_for('index') }}"><span class="ico"></span>Dashboard</a>
-        <a class="sidebar-item {% if request.path.startswith('/catalogues') %}active{% endif %}" href="{{ url_for('catalogues_page') }}"><span class="ico"></span>Catalogs</a>
-        <a class="sidebar-item {% if request.path.startswith('/product') %}active{% endif %}" href="{{ url_for('create_product') }}"><span class="ico"></span>Products</a>
-        <a class="sidebar-item" href="{{ url_for('index') }}"><span class="ico"></span>Categories</a>
-        <a class="sidebar-item" href="{{ url_for('index') }}"><span class="ico"></span>Shopify Sync</a>
-        <a class="sidebar-item" href="{{ url_for('index') }}"><span class="ico"></span>Analytics</a>
-        <a class="sidebar-item" href="{{ url_for('index') }}"><span class="ico"></span>Activity</a>
+        <a class="sidebar-item {% if request.path.startswith('/catalogues') %}active{% endif %}" href="{{ url_for('catalogues_page') }}"><span class="ico"></span>Manage Catalogues</a>
+        <a class="sidebar-item {% if request.path.startswith('/products') or request.path.startswith('/product') %}active{% endif %}" href="{{ url_for('products_hub') }}"><span class="ico"></span>Products</a>
+        <a class="sidebar-item {% if request.path.startswith('/activity') %}active{% endif %}" href="{{ url_for('activity_page') }}"><span class="ico"></span>Activity</a>
         <a class="sidebar-item {% if request.path.startswith('/settings') %}active{% endif %}" href="{{ url_for('settings_page') }}"><span class="ico"></span>Settings</a>
       </nav>
     </aside>
@@ -28,7 +25,7 @@
     <div class="app-main">
       <header class="top-nav modern-top-nav">
         <div class="top-left">
-          {% if request.path != '/' %}
+          {% if request.path.startswith('/product/') %}
             <button
               type="button"
               class="btn btn-blue"
@@ -37,7 +34,7 @@
               ← Back
             </button>
           {% endif %}
-          <div class="global-search">Search products, actions, pages...</div>
+          <div class="global-search">Search products, actions, pages…</div>
         </div>
         <nav class="top-links">
           <form method="post" action="{{ url_for('switch_catalogue') }}" class="catalogue-switch-form">
@@ -48,17 +45,43 @@
               {% endfor %}
             </select>
           </form>
-          <a class="btn btn-light" href="{{ url_for('catalogues_page') }}">Manage Catalogues</a>
+          <a class="btn btn-light" href="{{ url_for('settings_page') }}"><span class="admin-lock-inline" aria-hidden="true">🔒</span> Settings</a>
+          <button class="btn btn-green" type="button" id="pushAllBtn" {% if not shopify_configured %}disabled{% endif %}>Push all done products</button>
+          <a class="btn btn-light" href="{{ url_for('help_page') }}">Help</a>
           <button class="btn btn-light" type="button">Notifications</button>
           <button class="btn btn-light" type="button">Profile</button>
         </nav>
       </header>
       <main class="page">
+        <section id="batchPushProgress" class="progress-wrap hidden global-batch-push">
+          <div class="progress-bar"><div class="progress-fill" id="batchPushBar" style="width:0%"></div></div>
+          <small id="batchPushText"></small>
+        </section>
         {% block content %}{% endblock %}
       </main>
     </div>
   </div>
-  <script src="{{ url_for('static', filename='app.js', v='20260506a') }}"></script>
+
+  <div id="adminModal" class="admin-modal hidden" aria-hidden="true">
+    <div class="admin-modal-backdrop"></div>
+    <div class="admin-modal-box" role="dialog" aria-labelledby="adminModalTitle">
+      <h2 id="adminModalTitle">Administrator access required</h2>
+      <p class="sub">Enter the administrator password to continue.</p>
+      <input type="password" id="adminModalPassword" class="admin-modal-input" placeholder="Password" autocomplete="current-password">
+      <p id="adminModalError" class="save-status error hidden"></p>
+      <div class="admin-modal-actions">
+        <button type="button" class="btn btn-light" id="adminModalCancel">Cancel</button>
+        <button type="button" class="btn btn-green" id="adminModalUnlock">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js', v='20260511nav') }}"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      if (window.initHeaderPushAll) window.initHeaderPushAll();
+    });
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

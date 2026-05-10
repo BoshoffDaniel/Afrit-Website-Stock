@@ -8,13 +8,10 @@
     <p class="sub head-sub">Manage product data, media, and publishing workflows for this catalogue.</p>
   </div>
   <div class="dash-actions">
-    <span class="sync-pill {% if configured %}ok{% else %}warn{% endif %}">
-      {% if configured %}Last sync ready{% else %}Sync not configured{% endif %}
+    <span class="sync-pill {% if shopify_configured %}ok{% else %}warn{% endif %}">
+      {% if shopify_configured %}Last sync ready{% else %}Sync not configured{% endif %}
     </span>
-    <a class="btn btn-blue" href="{{ url_for('create_product') }}">+ Add Product</a>
-    <a class="btn btn-light" href="{{ url_for('settings_page') }}">⚙ Settings</a>
-    <button class="btn btn-green" id="pushAllBtn" {% if not configured %}disabled{% endif %}>Push all done products</button>
-    <a class="btn btn-light" href="/help">Help</a>
+    <a class="btn btn-blue" href="{{ url_for('products_hub', new='1') }}"><span class="admin-lock-inline" aria-hidden="true">🔒</span> + Add Product</a>
   </div>
 </header>
 
@@ -46,17 +43,12 @@
   <div class="progress-bar"><div class="progress-fill" style="width: {{ stats.percent }}%"></div></div>
 </section>
 
-<section class="shopify-bar {% if configured %}ok{% else %}warn{% endif %}">
-  {% if configured %}
+<section class="shopify-bar {% if shopify_configured %}ok{% else %}warn{% endif %}">
+  {% if shopify_configured %}
     Shopify connected — {{ stats.pushed }} pushed, {{ ready_to_push }} ready to push
   {% else %}
     Shopify not connected — add API key in Settings
   {% endif %}
-</section>
-
-<section id="batchPushProgress" class="progress-wrap hidden">
-  <div class="progress-bar"><div class="progress-fill" id="batchPushBar" style="width:0%"></div></div>
-  <small id="batchPushText"></small>
 </section>
 
 <section class="table-toolbar">
@@ -96,7 +88,7 @@
   <div class="empty-state">
     <h3>No products yet in this catalogue</h3>
     <p class="sub">Import an Excel file or add your first product manually to get started.</p>
-    <a class="btn btn-blue" href="{{ url_for('create_product') }}">Create First Product</a>
+    <a class="btn btn-blue" href="{{ url_for('products_hub', new='1') }}">Create First Product</a>
   </div>
   {% else %}
   <table id="productsTable">
@@ -114,7 +106,7 @@
           data-status="{{ p.status }}"
           data-pushed="{{ p.shopify_pushed }}">
         <td>
-          <a href="/product/{{ p.id }}" class="dash-thumb-link">
+          <a href="{{ url_for('products_hub', selected=p.id) }}" class="dash-thumb-link">
             {% if p.photos and p.photos|length > 0 %}
               <img class="dash-thumb" src="{{ url_for('static', filename='uploads/' ~ p.photos[0]) }}" alt="">
             {% else %}
@@ -132,7 +124,7 @@
           {% elif p.shopify_id %}<span class="shopify-dot orange"></span>
           {% else %}<span class="shopify-dot grey"></span>{% endif %}
         </td>
-        <td><a class="btn btn-small btn-green open-btn" href="/product/{{ p.id }}">Open</a></td>
+        <td><a class="btn btn-small btn-green open-btn" href="{{ url_for('products_hub', selected=p.id) }}">Open</a></td>
       </tr>
       {% endfor %}
     </tbody>
