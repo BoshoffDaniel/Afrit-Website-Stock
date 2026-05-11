@@ -401,6 +401,7 @@
     if (!page) return;
     const data = JSON.parse(byId("productData").textContent);
     const productId = data.id;
+    console.log("[initProductPage] load", { productId, PRODUCT_ID: window.PRODUCT_ID });
     const embed = page.dataset.embed === "1";
     if (embed && window.parent && window.parent !== window) {
       if (typeof window.parent.showAdminUnlock === "function") {
@@ -443,20 +444,26 @@
       prevBtn: byId("prevBtn"),
       nextBtn: byId("nextBtn"),
       statusToggle: byId("statusToggle"),
-      autoSave: byId("autoSaveIndicator"),
       pushOneBtn: byId("pushOneBtn"),
       pushOneStatus: byId("pushOneStatus"),
       optionalWrap: byId("optionalFields"),
       optionalToggle: byId("toggleOptionalFields"),
     };
 
-    const fields = ["stock_code", "name", "category", "supplier", "web_description", "sell_price", "compare_price", "tags", "notes", "shopify_sku"].map(byId);
     const setStatusMsg = (msg, type) => {
       by.saveStatus.textContent = msg;
       by.saveStatus.className = `save-status ${type || ""}`.trim();
     };
+    const collectPhotosFromDom = () => {
+      const thumbs = by.photoGrid.querySelectorAll(".thumb");
+      const fromDom = Array.from(thumbs).map((t) => t.dataset.filename).filter(Boolean);
+      return fromDom.length ? fromDom : photos.slice();
+    };
+
     const collectPayload = () => {
       syncDataLabels();
+      const statusEl = byId("statusValue");
+      const st = (statusEl && statusEl.value) || productStatus;
       return {
         stock_code: byId("stock_code").value,
         name: byId("name").value,
@@ -467,37 +474,60 @@
         compare_price: byId("compare_price").value,
         tags: byId("tags").value,
         notes: byId("notes").value,
-        status: productStatus,
+        status: st,
         shopify_sku: byId("shopify_sku").value,
-        photos: photos.slice(),
+        photos: collectPhotosFromDom(),
       };
     };
 
     const saveProduct = async (redirectAfter) => {
-      setStatusMsg("Saving...");
+      const btn = by.saveBtn;
+      const defaultText = "Save Product";
+      const prevBg = btn.style.background;
+      btn.textContent = "Saving...";
+      btn.disabled = true;
+      setStatusMsg("Saving...", "");
+      const payload = collectPayload();
+      console.log("[saveProduct] POST /product/%s/save", productId, payload);
       try {
         const res = await fetch(`/product/${productId}/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(collectPayload()),
+          body: JSON.stringify(payload),
         });
         const respData = await parseSaveResponse(res);
         if (!respData.success) {
           setStatusMsg(respData.error || "Save failed", "error");
+          btn.textContent = "Save Failed";
+          btn.style.background = "#dc2626";
+          btn.disabled = false;
+          alert(`Save failed: ${respData.error || "Unknown error"}`);
           return false;
         }
-        setStatusMsg("Saved!", "ok");
+        photos = Array.isArray(respData.product.photos) ? respData.product.photos.slice() : photos;
+        btn.textContent = "Saved ✓";
+        btn.style.background = "#2d8a4e";
+        setStatusMsg("Saved ✓", "ok");
         document.body.classList.add("flash-green");
         setTimeout(() => document.body.classList.remove("flash-green"), 450);
-        if (redirectAfter) {
-          setTimeout(() => {
-            if (embed) window.parent.location.href = `/products?selected=${productId}`;
-            else window.location.href = "/products";
-          }, 800);
-        }
+        console.log("[saveProduct] success");
+        setTimeout(() => {
+          btn.textContent = defaultText;
+          btn.style.background = prevBg;
+          btn.disabled = false;
+          if (redirectAfter) {
+            if (embed && window.parent && window.parent !== window) window.parent.location.href = "/";
+            else window.location.href = "/";
+          }
+        }, 1500);
         return true;
       } catch (e) {
+        console.error("[saveProduct]", e);
         setStatusMsg(e.message || "Save failed — check your connection.", "error");
+        btn.textContent = "Save Failed";
+        btn.style.background = "#dc2626";
+        btn.disabled = false;
+        alert(`Save error: ${e.message || "Unknown error"}`);
         return false;
       }
     };
@@ -575,13 +605,24 @@
     const uploadFiles = async (fileList) => {
       by.uploadError.textContent = "";
       for (const file of Array.from(fileList)) {
+        console.log("[upload] file", file.name, file.size);
         const fd = new FormData();
         fd.append("photo", file);
         fd.append("product_id", String(productId));
         const res = await fetch("/api/upload-photo", { method: "POST", body: fd });
-        const pdata = await res.json();
+        let pdata;
+        try {
+          pdata = await res.json();
+        } catch (parseErr) {
+          console.error("[upload] bad JSON", parseErr);
+          by.uploadError.textContent = "Upload failed (invalid server response)";
+          alert("Upload failed: invalid server response");
+          continue;
+        }
+        console.log("[upload] response", pdata);
         if (!pdata.success) {
           by.uploadError.textContent = pdata.error || "Upload failed";
+          alert(`Upload failed: ${pdata.error || "Unknown error"}`);
           continue;
         }
         photos.push(pdata.filename);
@@ -603,11 +644,12 @@
         body: JSON.stringify({ filename: name, product_id: productId }),
       });
       const pdata = await res.json();
+      console.log("[claim-inbox]", pdata);
       if (pdata.success) {
         photos.push(pdata.filename);
         renderPhotoGrid();
         if (pdata.processing) pollPhoto(pdata.filename);
-        pollInbox();
+        refreshInboxAfterClaim();
       }
     };
     const discardInbox = async (name) => {
@@ -616,11 +658,11 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: name }),
       });
-      pollInbox();
+      refreshInboxAfterClaim();
     };
     const renderInbox = (files) => {
       if (!files.length) {
-        by.inboxTray.innerHTML = `<div class="watching-row"><span class="dot-pulse"></span><span>Watching for new photos...</span></div>`;
+        by.inboxTray.innerHTML = `<div class="watching-row"><span class="pulse-dot" aria-hidden="true"></span><span>Watching for new photos...</span></div>`;
         return;
       }
       by.inboxTray.innerHTML = "";
@@ -641,39 +683,81 @@
         by.inboxTray.appendChild(item);
       });
     };
-    const pollInbox = async () => {
-      const res = await fetch("/api/check-inbox");
-      const pdata = await res.json();
-      const files = pdata.files || [];
-      renderInbox(files);
+
+    function playBeep() {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        const ctx = new AC();
+        const osc = ctx.createOscillator();
+        osc.connect(ctx.destination);
+        osc.frequency.value = 880;
+        osc.start();
+        osc.stop(ctx.currentTime + 0.15);
+      } catch (e) {
+        console.log("[playBeep] skipped", e);
+      }
+    }
+
+    let inboxInterval = null;
+    const knownInboxFiles = new Set();
+    let inboxSeeded = false;
+
+    const refreshInboxAfterClaim = async () => {
+      try {
+        const res = await fetch("/api/check-inbox");
+        const pdata = await res.json();
+        renderInbox(pdata.files || []);
+      } catch (e) {
+        console.log("[refreshInboxAfterClaim]", e);
+      }
     };
 
-    const autoSave = debounce(async () => {
-      by.autoSave.classList.add("show");
-      await saveProduct(false);
-      setTimeout(() => by.autoSave.classList.remove("show"), 600);
-    }, 2200);
-    fields.forEach((f) => {
-      if (!f) return;
-      f.addEventListener("input", autoSave);
-      f.addEventListener("change", autoSave);
-    });
+    function startInboxPolling() {
+      if (inboxInterval) clearInterval(inboxInterval);
+      inboxInterval = setInterval(async () => {
+        try {
+          const response = await fetch("/api/check-inbox");
+          const pdata = await response.json();
+          const files = pdata.files || [];
+          if (pdata.error) console.warn("[check-inbox]", pdata.error);
+          if (!inboxSeeded) {
+            files.forEach((f) => knownInboxFiles.add(f));
+            inboxSeeded = true;
+          } else {
+            const newFiles = files.filter((f) => !knownInboxFiles.has(f));
+            if (newFiles.length > 0) {
+              playBeep();
+              newFiles.forEach((f) => knownInboxFiles.add(f));
+              console.log("[inbox] new files", newFiles);
+            }
+          }
+          renderInbox(files);
+        } catch (e) {
+          console.log("Inbox poll error:", e);
+        }
+      }, 2000);
+    }
 
     by.statusToggle.addEventListener("click", () => {
+      const hidden = byId("statusValue");
       productStatus = productStatus === "pending" ? "done" : "pending";
+      if (hidden) hidden.value = productStatus;
       by.statusToggle.classList.toggle("done", productStatus === "done");
       by.statusToggle.classList.toggle("pending", productStatus !== "done");
       by.statusToggle.textContent = productStatus === "done" ? "DONE ✓" : "PENDING";
+      console.log("[statusToggle]", productStatus);
     });
     by.saveBtn.addEventListener("click", async () => { await saveProduct(true); });
 
-    const nav = async (hubHref, prodId) => {
+    const nav = async (prodId) => {
       await saveProduct(false);
-      if (embed && hubHref) window.parent.location.href = hubHref;
-      else window.location.href = `/product/${prodId}`;
+      const url = `/product/${prodId}`;
+      if (embed && window.parent && window.parent !== window) window.parent.location.href = url;
+      else window.location.href = url;
     };
-    by.prevBtn.addEventListener("click", async () => nav(by.prevBtn.dataset.hubHref, by.prevBtn.dataset.id));
-    by.nextBtn.addEventListener("click", async () => nav(by.nextBtn.dataset.hubHref, by.nextBtn.dataset.id));
+    by.prevBtn.addEventListener("click", async () => nav(by.prevBtn.dataset.id));
+    by.nextBtn.addEventListener("click", async () => nav(by.nextBtn.dataset.id));
 
     if (by.optionalToggle) {
       by.optionalToggle.addEventListener("click", (e) => {
@@ -689,29 +773,40 @@
       const category = (byId("category").value || "").replace(/[^A-Za-z]/g, "");
       const prefix = category ? category.slice(0, 3).toUpperCase() : "GEN";
       skuInput.value = `${prefix}-${byId("stock_code").value}`;
-      autoSave();
     });
 
     const aiBtn = byId("aiDescBtn");
     const aiStatus = byId("aiDescStatus");
+    const aiHint = byId("aiHint");
     if (aiBtn) {
       aiBtn.addEventListener("click", async () => {
         aiBtn.disabled = true;
         aiStatus.textContent = "Generating description...";
-        const res = await fetch("/api/generate-description", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product_id: productId }),
-        });
-        const result = await res.json();
-        if (result.success) {
-          byId("web_description").value = result.description;
-          aiStatus.textContent = "Description generated ✓";
-          aiStatus.className = "save-status ok";
-          autoSave();
-        } else {
-          aiStatus.textContent = result.error || "Generation failed";
+        aiStatus.className = "save-status";
+        console.log("[AI] POST generate-description", { product_id: productId });
+        try {
+          const res = await fetch("/api/generate-description", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ product_id: productId }),
+          });
+          const result = await res.json();
+          console.log("[AI] response", res.status, result);
+          if (result.success) {
+            byId("web_description").value = result.description;
+            if (aiHint) aiHint.textContent = "AI generated — please review";
+            aiStatus.textContent = "AI generated — please review before saving.";
+            aiStatus.className = "save-status ok";
+          } else {
+            aiStatus.textContent = result.error || "Generation failed";
+            aiStatus.className = "save-status error";
+            alert(result.error || "Generation failed");
+          }
+        } catch (e) {
+          console.error("[AI]", e);
+          aiStatus.textContent = e.message || "Request failed";
           aiStatus.className = "save-status error";
+          alert(`AI description error: ${e.message || "Request failed"}`);
         }
         aiBtn.disabled = false;
       });
@@ -746,14 +841,29 @@
           delStatus.className = "save-status error";
           return;
         }
-        if (embed) window.parent.location.href = "/products";
-        else window.location.href = "/products";
+        if (embed && window.parent && window.parent !== window) window.parent.location.href = "/";
+        else window.location.href = "/";
       });
     }
 
+    const hv = byId("statusValue");
+    if (hv) hv.value = productStatus;
+
     renderPhotoGrid();
-    pollInbox();
-    setInterval(pollInbox, 2000);
+    (async () => {
+      try {
+        const res = await fetch("/api/check-inbox");
+        const pdata = await res.json();
+        const files = pdata.files || [];
+        if (pdata.error) console.warn("[check-inbox initial]", pdata.error);
+        files.forEach((f) => knownInboxFiles.add(f));
+        inboxSeeded = true;
+        renderInbox(files);
+      } catch (e) {
+        console.log("[inbox initial]", e);
+      }
+    })();
+    startInboxPolling();
   };
 
   window.initProductHubPanel = function () {
@@ -763,63 +873,12 @@
     const cfg = JSON.parse(cfgEl.textContent);
     let current = cfg.product;
     const categoryNames = new Set(cfg.categoryNames || []);
-    const shopifyConfigured = !!cfg.shopifyConfigured;
     const productId = current.id;
-    let productStatus = current.status === "done" ? "done" : "pending";
-    let hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
-    let dragged = null;
-    const lightbox = createLightbox();
 
-    const ro = {
-      read: byId("hubPanelReadonly"),
-      edit: byId("hubPanelEdit"),
-      editBtn: byId("hubPanelEditBtn"),
-      saveBtn: byId("hubPanelSaveBtn"),
-      cancelBtn: byId("hubPanelCancelBtn"),
-      autoInd: byId("hubPanelAutoIndicator"),
-      saveErr: byId("hubPanelSaveError"),
-    };
+    const saveErr = byId("hubPanelSaveError");
+    const saveBtn = byId("hubPanelSaveBtn");
 
     const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-    const shopifyRoHtml = (p) => {
-      if (!shopifyConfigured) return '<span class="sub">Not configured</span>';
-      if (p.shopify_pushed) {
-        return `<span class="shopify-dot green"></span> Pushed${p.shopify_pushed_at ? ` — ${esc(p.shopify_pushed_at)}` : ""}`;
-      }
-      if (p.shopify_id) return '<span class="shopify-dot orange"></span> Needs re-push';
-      return '<span class="shopify-dot grey"></span> Not pushed';
-    };
-
-    const applyReadonly = (p) => {
-      byId("hubRoStockCode").textContent = p.stock_code || "";
-      byId("hubRoName").textContent = p.name || "";
-      const catWrap = byId("hubRoCategoryWrap");
-      const c = (p.category || "").trim();
-      if (c) {
-        catWrap.innerHTML = `<span id="hubRoCategory">${esc(c)}</span>`;
-      } else {
-        catWrap.innerHTML = '<span class="badge badge-uncategorised" id="hubRoCategory">Uncategorised</span>';
-      }
-      byId("hubRoSupplier").textContent = p.supplier || "—";
-      byId("hubRoShopifySku").textContent = p.shopify_sku || "—";
-      byId("hubRoSellPrice").textContent = p.sell_price != null ? String(p.sell_price) : "—";
-      byId("hubRoComparePrice").textContent = p.compare_price != null ? String(p.compare_price) : "—";
-      const badge = byId("hubRoStatusBadge");
-      badge.textContent = (p.status || "pending").toUpperCase();
-      badge.className = `badge badge-${p.status || "pending"}`;
-      byId("hubRoShopifyPush").innerHTML = shopifyRoHtml(p);
-      byId("hubRoWebDesc").textContent = p.web_description || "—";
-      byId("hubRoNotes").textContent = p.notes || "—";
-      const grid = byId("hubRoPhotoGrid");
-      if (p.photos && p.photos.length) {
-        grid.innerHTML = p.photos.map((fn) => `<img class="hub-ro-thumb" src="/static/uploads/${esc(fn)}?t=${Date.now()}" alt="">`).join("");
-      } else {
-        grid.innerHTML = '<span class="sub">No photos yet</span>';
-      }
-      const pushBtn = byId("hubReadonlyPushBtn");
-      if (pushBtn) pushBtn.textContent = p.shopify_pushed ? "Re-push" : "Push to Shopify";
-    };
 
     const updateListRow = (p) => {
       const li = document.querySelector(`.products-list-item[data-id="${p.id}"]`);
@@ -844,30 +903,6 @@
       }
     };
 
-    const addCategoryToSelect = (name) => {
-      const n = (name || "").trim();
-      if (!n || categoryNames.has(n)) return;
-      categoryNames.add(n);
-      const sel = byId("hubEditCategorySelect");
-      const empty = sel.querySelector("option[value=\"\"]");
-      const marker = sel.querySelector('option[value="__new__"]');
-      const middle = Array.from(sel.options).filter((o) => o.value && o.value !== "__new__" && o.value !== "");
-      const opt = document.createElement("option");
-      opt.value = n;
-      opt.textContent = n;
-      middle.push(opt);
-      middle.sort((a, b) => a.text.localeCompare(b.text, undefined, { sensitivity: "base" }));
-      sel.innerHTML = "";
-      sel.appendChild(empty);
-      middle.forEach((o) => {
-        const x = document.createElement("option");
-        x.value = o.value;
-        x.textContent = o.textContent;
-        sel.appendChild(x);
-      });
-      sel.appendChild(marker);
-    };
-
     const addHubFilterCategory = (cat) => {
       const n = (cat || "").trim();
       if (!n) return;
@@ -881,354 +916,95 @@
       sel.appendChild(opt);
     };
 
-    const syncCategorySelect = (catRaw) => {
-      const sel = byId("hubEditCategorySelect");
-      const wrap = byId("hubEditCategoryNewWrap");
-      const inp = byId("hubEditCategoryNew");
-      const c = (catRaw || "").trim();
-      inp.value = "";
-      wrap.classList.add("hidden");
-      if (!c) {
-        sel.value = "";
-        return;
-      }
-      let found = false;
-      for (let i = 0; i < sel.options.length; i++) {
-        if (sel.options[i].value === c) {
-          found = true;
-          break;
-        }
-      }
-      if (found) {
-        sel.value = c;
-        return;
-      }
-      sel.value = "__new__";
-      wrap.classList.remove("hidden");
-      inp.value = c;
+    const addCategoryToDatalist = (name) => {
+      const n = (name || "").trim();
+      if (!n || categoryNames.has(n)) return;
+      categoryNames.add(n);
+      const dl = byId("hubMasterCategoryDatalist");
+      if (!dl) return;
+      const opt = document.createElement("option");
+      opt.value = n;
+      dl.appendChild(opt);
     };
 
-    const collectCategory = () => {
-      const sel = byId("hubEditCategorySelect").value;
-      if (sel === "__new__") return (byId("hubEditCategoryNew").value || "").trim();
-      return sel.trim();
+    const buildPayload = () => {
+      const c = current;
+      const sp = c.sell_price;
+      const cp = c.compare_price;
+      return {
+        stock_code: byId("hubEditStockCode").value,
+        name: byId("hubEditName").value,
+        category: (byId("hubEditCategory").value || "").trim(),
+        supplier: byId("hubEditSupplier").value,
+        web_description: c.web_description != null ? String(c.web_description) : "",
+        sell_price: sp != null && sp !== "" ? String(sp) : "",
+        compare_price: cp != null && cp !== "" ? String(cp) : "",
+        tags: c.tags != null ? String(c.tags) : "",
+        notes: c.notes != null ? String(c.notes) : "",
+        status: c.status === "done" ? "done" : "pending",
+        shopify_sku: c.shopify_sku != null ? String(c.shopify_sku) : "",
+        photos: Array.isArray(c.photos) ? c.photos.slice() : [],
+      };
     };
 
-    const pushFromFormToEditor = () => {
+    const syncForm = () => {
       byId("hubEditStockCode").value = current.stock_code || "";
       byId("hubEditName").value = current.name || "";
-      syncCategorySelect(current.category);
+      byId("hubEditCategory").value = current.category || "";
       byId("hubEditSupplier").value = current.supplier || "";
-      byId("hubEditShopifySku").value = current.shopify_sku || "";
-      byId("hubEditWebDesc").value = current.web_description || "";
-      byId("hubEditSellPrice").value = current.sell_price != null ? String(current.sell_price) : "";
-      byId("hubEditComparePrice").value = current.compare_price != null ? String(current.compare_price) : "";
-      byId("hubEditTags").value = current.tags || "";
-      byId("hubEditNotes").value = current.notes || "";
-      productStatus = current.status === "done" ? "done" : "pending";
-      const st = byId("hubEditStatusToggle");
-      st.classList.toggle("done", productStatus === "done");
-      st.classList.toggle("pending", productStatus !== "done");
-      st.textContent = productStatus === "done" ? "DONE ✓" : "PENDING";
-      hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
-      renderHubPhotos();
     };
 
-    const collectPhotosFromGrid = () => {
-      const grid = byId("hubEditPhotoGrid");
-      if (!grid) return hubPhotos.slice();
-      const fromDom = Array.from(grid.querySelectorAll(".thumb"))
-        .map((el) => el.dataset.filename)
-        .filter((name) => name && String(name).trim());
-      return fromDom.length ? fromDom : hubPhotos.slice();
-    };
+    const saveBtnDefault = "Save";
 
-    const collectPayload = () => ({
-      stock_code: byId("hubEditStockCode").value,
-      name: byId("hubEditName").value,
-      category: collectCategory(),
-      supplier: byId("hubEditSupplier").value,
-      web_description: byId("hubEditWebDesc").value,
-      sell_price: byId("hubEditSellPrice").value,
-      compare_price: byId("hubEditComparePrice").value,
-      tags: byId("hubEditTags").value,
-      notes: byId("hubEditNotes").value,
-      status: productStatus,
-      shopify_sku: byId("hubEditShopifySku").value,
-      photos: collectPhotosFromGrid(),
-    });
-
-    const showAuto = (msg, isError) => {
-      const el = ro.autoInd;
-      el.textContent = msg;
-      el.classList.remove("hidden");
-      el.style.color = isError ? "#b91c1c" : "";
-      if (!isError && msg === "Saved ✓") {
-        setTimeout(() => {
-          el.classList.add("hidden");
-          el.textContent = "";
-        }, 2500);
-      }
-    };
-
-    const scheduleAutoSave = debounce(async () => {
-      if (ro.edit.classList.contains("hidden")) return;
-      showAuto("Saving...", false);
-      ro.saveErr.classList.add("hidden");
-      ro.saveErr.textContent = "";
+    saveBtn.addEventListener("click", async () => {
+      saveErr.classList.add("hidden");
+      saveErr.textContent = "";
+      saveBtn.disabled = true;
+      const prevColor = saveBtn.style.color;
+      saveBtn.textContent = "Saving...";
       try {
         const res = await fetch(`/product/${productId}/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(collectPayload()),
+          body: JSON.stringify(buildPayload()),
         });
         const data = await parseSaveResponse(res);
         if (!data.success) {
-          showAuto(data.error || "Save failed", true);
-          ro.saveErr.textContent = data.error || "Save failed";
-          ro.saveErr.classList.remove("hidden");
+          saveErr.textContent = data.error || "Save failed";
+          saveErr.classList.remove("hidden");
+          saveBtn.textContent = "Save failed";
+          saveBtn.style.color = "#b91c1c";
+          setTimeout(() => {
+            saveBtn.textContent = saveBtnDefault;
+            saveBtn.style.color = prevColor;
+          }, 2500);
           return;
         }
         current = data.product;
-        hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
-        applyReadonly(current);
+        syncForm();
         updateListRow(current);
         const nc = (current.category || "").trim();
         if (nc) {
-          addCategoryToSelect(nc);
+          addCategoryToDatalist(nc);
           addHubFilterCategory(nc);
         }
-        showAuto("Saved ✓", false);
+        saveBtn.textContent = "Saved ✓";
+        setTimeout(() => { saveBtn.textContent = saveBtnDefault; }, 2000);
       } catch (e) {
-        const msg = e.message || "Save failed";
-        showAuto(msg, true);
-        ro.saveErr.textContent = msg;
-        ro.saveErr.classList.remove("hidden");
-      }
-    }, 3000);
-
-    const saveBtnDefault = "Save Changes";
-
-    const saveOnce = async (exitEdit) => {
-      ro.saveErr.classList.add("hidden");
-      ro.saveErr.textContent = "";
-      ro.saveBtn.disabled = true;
-      const prevColor = ro.saveBtn.style.color;
-      ro.saveBtn.textContent = "Saving...";
-      ro.saveBtn.style.color = "";
-      try {
-        const res = await fetch(`/product/${productId}/save`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(collectPayload()),
-        });
-        const data = await parseSaveResponse(res);
-        if (!data.success) {
-          ro.saveErr.textContent = data.error || "Save failed";
-          ro.saveErr.classList.remove("hidden");
-          ro.saveBtn.textContent = "Save Failed";
-          ro.saveBtn.style.color = "#b91c1c";
-          setTimeout(() => {
-            ro.saveBtn.textContent = saveBtnDefault;
-            ro.saveBtn.style.color = prevColor;
-          }, 2500);
-          return false;
-        }
-        current = data.product;
-        hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
-        applyReadonly(current);
-        updateListRow(current);
-        const nc = (current.category || "").trim();
-        if (nc) {
-          addCategoryToSelect(nc);
-          addHubFilterCategory(nc);
-        }
-        ro.saveBtn.textContent = "Saved ✓";
-        ro.saveBtn.style.color = "";
+        saveErr.textContent = e.message || "Save failed";
+        saveErr.classList.remove("hidden");
+        saveBtn.textContent = "Save failed";
+        saveBtn.style.color = "#b91c1c";
         setTimeout(() => {
-          ro.saveBtn.textContent = saveBtnDefault;
-        }, 2000);
-        if (exitEdit) {
-          ro.read.classList.remove("hidden");
-          ro.edit.classList.add("hidden");
-          ro.editBtn.classList.remove("hidden");
-          ro.autoInd.classList.add("hidden");
-        }
-        return true;
-      } catch (e) {
-        const msg = e.message || "Save failed — check your connection.";
-        ro.saveErr.textContent = msg;
-        ro.saveErr.classList.remove("hidden");
-        ro.saveBtn.textContent = "Save Failed";
-        ro.saveBtn.style.color = "#b91c1c";
-        setTimeout(() => {
-          ro.saveBtn.textContent = saveBtnDefault;
-          ro.saveBtn.style.color = prevColor;
+          saveBtn.textContent = saveBtnDefault;
+          saveBtn.style.color = prevColor;
         }, 2500);
-        return false;
       } finally {
-        ro.saveBtn.disabled = false;
-      }
-    };
-
-    const renderHubPhotos = () => {
-      const grid = byId("hubEditPhotoGrid");
-      grid.innerHTML = "";
-      hubPhotos.forEach((name, idx) => {
-        const el = document.createElement("div");
-        el.className = "thumb";
-        el.draggable = true;
-        el.dataset.filename = name;
-        el.innerHTML = `${idx === 0 ? '<div class="main-label">★ Main</div>' : ""}<img src="/static/uploads/${name}?t=${Date.now()}" alt=""><button type="button" class="delete-btn">×</button>`;
-        el.querySelector("img").addEventListener("click", () => {
-          lightbox.open({
-            imageSrc: `/static/uploads/${name}?t=${Date.now()}`,
-            mode: "saved",
-            onDelete: async () => {
-              await fetch("/api/delete-photo", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ filename: name, product_id: productId }),
-              }).then((r) => r.json());
-              hubPhotos = hubPhotos.filter((p) => p !== name);
-              renderHubPhotos();
-              scheduleAutoSave();
-              lightbox.close();
-            },
-          });
-        });
-        el.querySelector(".delete-btn").addEventListener("click", async () => {
-          await fetch("/api/delete-photo", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename: name, product_id: productId }),
-          }).then((r) => r.json());
-          hubPhotos = hubPhotos.filter((p) => p !== name);
-          renderHubPhotos();
-          scheduleAutoSave();
-        });
-        el.addEventListener("dragstart", () => { dragged = name; });
-        el.addEventListener("dragover", (e) => e.preventDefault());
-        el.addEventListener("drop", async (e) => {
-          e.preventDefault();
-          const target = name;
-          if (!dragged || dragged === target) return;
-          const from = hubPhotos.indexOf(dragged);
-          const to = hubPhotos.indexOf(target);
-          const [moved] = hubPhotos.splice(from, 1);
-          hubPhotos.splice(to, 0, moved);
-          renderHubPhotos();
-          await fetch("/api/reorder-photos", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ product_id: productId, filenames: hubPhotos }),
-          });
-          scheduleAutoSave();
-        });
-        grid.appendChild(el);
-      });
-    };
-
-    const bindUpload = () => {
-      const zone = byId("hubEditUploadZone");
-      const input = byId("hubEditUploadInput");
-      const err = byId("hubEditUploadError");
-      const doUpload = async (files) => {
-        err.textContent = "";
-        for (const file of Array.from(files)) {
-          const fd = new FormData();
-          fd.append("photo", file);
-          fd.append("product_id", String(productId));
-          const res = await fetch("/api/upload-photo", { method: "POST", body: fd });
-          const d = await res.json();
-          if (!d.success) {
-            err.textContent = d.error || "Upload failed";
-            continue;
-          }
-          hubPhotos.push(d.filename);
-          renderHubPhotos();
-          const poll = async () => {
-            const statusRes = await fetch(`/api/photo-status/${encodeURIComponent(d.filename)}`);
-            const st = await statusRes.json();
-            if (st.status === "done") renderHubPhotos();
-            else setTimeout(poll, 1200);
-          };
-          if (d.processing) poll();
-          scheduleAutoSave();
-        }
-      };
-      zone.addEventListener("click", () => input.click());
-      input.addEventListener("change", (e) => doUpload(e.target.files));
-      ["dragenter", "dragover"].forEach((evt) => zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.add("drag-over"); }));
-      ["dragleave", "drop"].forEach((evt) => zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.remove("drag-over"); }));
-      zone.addEventListener("drop", (e) => doUpload(e.dataTransfer.files));
-    };
-
-    byId("hubEditCategorySelect").addEventListener("change", () => {
-      const w = byId("hubEditCategoryNewWrap");
-      if (byId("hubEditCategorySelect").value === "__new__") w.classList.remove("hidden");
-      else w.classList.add("hidden");
-      scheduleAutoSave();
-    });
-
-    byId("hubEditRegenSku").addEventListener("click", () => {
-      const cat = collectCategory().replace(/[^A-Za-z]/g, "");
-      const prefix = cat ? cat.slice(0, 3).toUpperCase() : "GEN";
-      byId("hubEditShopifySku").value = `${prefix}-${byId("hubEditStockCode").value.trim()}`;
-      scheduleAutoSave();
-    });
-
-    byId("hubEditStatusToggle").addEventListener("click", () => {
-      productStatus = productStatus === "pending" ? "done" : "pending";
-      const st = byId("hubEditStatusToggle");
-      st.classList.toggle("done", productStatus === "done");
-      st.classList.toggle("pending", productStatus !== "done");
-      st.textContent = productStatus === "done" ? "DONE ✓" : "PENDING";
-      scheduleAutoSave();
-    });
-
-    ["hubEditStockCode", "hubEditName", "hubEditSupplier", "hubEditWebDesc", "hubEditSellPrice", "hubEditComparePrice", "hubEditTags", "hubEditNotes", "hubEditCategoryNew"].forEach((id) => {
-      const el = byId(id);
-      if (el) {
-        el.addEventListener("input", () => scheduleAutoSave());
-        el.addEventListener("change", () => scheduleAutoSave());
+        saveBtn.disabled = false;
       }
     });
 
-    ro.editBtn.addEventListener("click", () => {
-      pushFromFormToEditor();
-      ro.read.classList.add("hidden");
-      ro.edit.classList.remove("hidden");
-      ro.editBtn.classList.add("hidden");
-    });
-
-    ro.cancelBtn.addEventListener("click", () => {
-      window.location.reload();
-    });
-
-    ro.saveBtn.addEventListener("click", async () => {
-      await saveOnce(true);
-    });
-
-    const pushBtn = byId("hubReadonlyPushBtn");
-    if (pushBtn) {
-      pushBtn.addEventListener("click", async () => {
-        const status = byId("hubReadonlyPushStatus");
-        pushBtn.disabled = true;
-        status.textContent = "Pushing...";
-        const res = await fetch(`/api/push-to-shopify/${productId}`, { method: "POST" });
-        const d = await res.json();
-        if (d.success) window.location.reload();
-        else {
-          status.textContent = d.error || "Push failed";
-          pushBtn.disabled = false;
-        }
-      });
-    }
-
-    applyReadonly(current);
-    bindUpload();
-    renderHubPhotos();
+    syncForm();
   };
 
   function createLightbox() {

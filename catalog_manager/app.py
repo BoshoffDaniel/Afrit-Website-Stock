@@ -37,6 +37,8 @@ else:
     BASE_DIR = os.environ.get("CATALOG_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
     DATA_DIR = os.environ.get("CATALOG_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 
+DB_PATH = os.path.join(DATA_DIR, "catalog.db")
+
 app = Flask(
     __name__,
     template_folder=os.path.join(BASE_DIR, "templates"),
@@ -239,62 +241,21 @@ def process_photo_async(filename):
     PHOTO_STATUS[filename] = {"status": "done", "url": f"/static/uploads/{filename}", "processed": ok}
 
 
-def _call_groq_generate(product):
-    api_key = (get_setting("groq_api_key") or "").strip()
-    if not api_key:
-        return {"success": False, "error": "Groq API key not configured. Go to Settings to add your key."}
-    system_prompt = """You are a professional product copywriter for a South
-African trailer parts and accessories company. You write clear,
-accurate, and helpful product descriptions for an online store.
-The company sells parts used in the manufacturing and maintenance
-of trailers including suspension components, electrical parts,
-hydraulic systems, braking systems, coupling systems, and
-structural components. Descriptions must be professional,
-factual, and helpful to a customer who needs to identify and
-purchase the correct part. Write in English. Keep descriptions
-between 60-120 words. Do not use bullet points. Do not make up
-specifications you are not sure about. Focus on what the part
-is, what it does, and what trailer types or applications it
-suits."""
-    user_prompt = f"""Write a product description for this trailer part:
-
-Product name: {product['name']}
-Category: {product['category']}
-SKU: {product['shopify_sku']}
-
-Write a helpful, accurate product description for this part
-as it would appear on a Shopify store. Do not include the
-product name as a heading. Just write the description paragraph."""
+def _process_uploaded_file_inplace(final_path):
+    """Background removal to a temp file, then replace original."""
+    tmp_out = f"{final_path}.proc.jpg"
     try:
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.4,
-                "max_tokens": 400,
-            },
-            timeout=45,
-        )
-        response.raise_for_status()
-        data = response.json()
-        text = ""
-        choices = data.get("choices") or []
-        if choices:
-            message = choices[0].get("message") or {}
-            text = message.get("content") or ""
-        if not text.strip():
-            return {"success": False, "error": "Groq returned empty description."}
-        return {"success": True, "description": text.strip()}
+        process_photo(final_path, tmp_out)
+        if os.path.exists(tmp_out):
+            os.replace(tmp_out, final_path)
     except Exception as exc:
-        return {"success": False, "error": str(exc)}
+        print(f"process_photo on upload: {exc}")
+    finally:
+        if os.path.exists(tmp_out):
+            try:
+                os.remove(tmp_out)
+            except OSError:
+                pass
 
 
 @app.before_request
@@ -366,12 +327,14 @@ def products_hub():
     if selected_id is not None and selected_id not in ids:
         selected_id = None
 
+    catalogue_stats = get_counts(catalogue_id)
+    ready_to_push = len([p for p in products if p["status"] == "done" and not p["shopify_pushed"]])
+    target_total = int(get_catalogue_setting(catalogue_id, "products_total_target") or "2036")
+
     selected_product = None
     previous_item = None
     next_item = None
     position = 0
-    target_total = int(get_catalogue_setting(catalogue_id, "products_total_target") or "2036")
-    stats = {}
     needs_repush = False
     show_new_panel = request.args.get("new") == "1" and not selected_id
     if selected_id and not show_new_panel:
@@ -385,13 +348,16 @@ def products_hub():
             position = pos + 1
             previous_item = all_nav[pos - 1] if pos > 0 else all_nav[-1]
             next_item = all_nav[pos + 1] if pos < len(all_nav) - 1 else all_nav[0]
-            stats = get_counts(catalogue_id)
             needs_repush = bool(
                 selected_product["shopify_pushed"]
                 and selected_product.get("shopify_pushed_at")
                 and selected_product.get("updated_at")
                 and selected_product["updated_at"] > selected_product["shopify_pushed_at"]
             )
+
+    # Always bind `stats` for the template. If `stats` is only assigned inside a branch,
+    # Python still treats it as a local for the whole function → UnboundLocalError on render.
+    stats = catalogue_stats
 
     return render_template(
         "products_hub.html",
@@ -409,6 +375,9 @@ def products_hub():
         panel_target_total=target_total,
         panel_stats=stats,
         panel_needs_repush=needs_repush,
+        stats=stats,
+        ready_to_push=ready_to_push,
+        target_total=target_total,
     )
 
 
@@ -758,6 +727,11 @@ def product_page(product_id):
     product = product_to_dict(row)
     cur.execute("SELECT id, stock_code FROM products WHERE catalogue_id = ? ORDER BY id ASC", (catalogue_id,))
     all_ids = [dict(r) for r in cur.fetchall()]
+    cur.execute(
+        "SELECT COUNT(*) FROM products WHERE catalogue_id = ? AND status='done' AND IFNULL(shopify_pushed,0)=0",
+        (catalogue_id,),
+    )
+    ready_to_push = cur.fetchone()[0]
     conn.close()
     pos = next((i for i, p in enumerate(all_ids) if p["id"] == product_id), 0)
     prev_item = all_ids[pos - 1] if pos > 0 else all_ids[-1]
@@ -785,6 +759,7 @@ def product_page(product_id):
         needs_repush=needs_repush,
         embed=embed,
         category_options=category_options,
+        ready_to_push=ready_to_push,
     )
 
 
@@ -792,8 +767,12 @@ def product_page(product_id):
 def save_product(product_id):
     catalogue_id = get_current_catalogue_id()
     payload = request.get_json(silent=True) or {}
-    print("Received save data:", payload)
     photos = payload.get("photos", [])
+    if isinstance(photos, str):
+        try:
+            photos = json.loads(photos)
+        except (ValueError, TypeError):
+            photos = []
     if not isinstance(photos, list):
         photos = []
     photo_paths = [os.path.basename(str(p)) for p in photos if p is not None and str(p).strip()]
@@ -879,9 +858,16 @@ def api_upload_photo():
     try:
         catalogue_id = get_current_catalogue_id()
         if "photo" not in request.files:
-            return jsonify({"success": False, "error": "No file uploaded"}), 400
-        product_id = int(request.form.get("product_id", "0"))
+            return jsonify({"success": False, "error": "No photo file received"}), 400
         file = request.files["photo"]
+        product_id = request.form.get("product_id")
+        if not product_id or file.filename is None or file.filename == "":
+            return jsonify({"success": False, "error": "Empty file"}), 400
+        try:
+            product_id = int(product_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Invalid product_id"}), 400
+        ensure_storage_dirs()
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT stock_code, photos FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
@@ -889,17 +875,24 @@ def api_upload_photo():
         if not row:
             conn.close()
             return jsonify({"success": False, "error": "Product not found"}), 404
-        filename = f"{sanitize_stock_code(row['stock_code'])}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.jpg"
+        safe_code = str(row["stock_code"]).replace("/", "_").replace(".", "_").replace(" ", "_")
+        filename = f"{safe_code}_{int(time.time())}.jpg"
         final_path = os.path.join(UPLOAD_DIR, filename)
         file.save(final_path)
+        _process_uploaded_file_inplace(final_path)
         photos = parse_photos(row["photos"])
         photos.append(filename)
-        cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id = ? AND catalogue_id = ?", (json.dumps(photos), product_id, catalogue_id))
+        cur.execute(
+            "UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id = ? AND catalogue_id = ?",
+            (json.dumps(photos), product_id, catalogue_id),
+        )
         conn.commit()
         conn.close()
-        threading.Thread(target=process_photo_async, args=(filename,), daemon=True).start()
-        return jsonify({"success": True, "filename": filename, "url": f"/static/uploads/{filename}", "processing": True})
+        url = f"/static/uploads/{filename}"
+        return jsonify({"success": True, "filename": filename, "url": url, "processing": False})
     except Exception as exc:
+        print(f"Upload error: {exc}")
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
@@ -959,11 +952,13 @@ def api_reorder_photos():
 @app.route("/api/check-inbox")
 def api_check_inbox():
     try:
-        files = [f for f in os.listdir(INBOX_DIR) if os.path.splitext(f)[1].lower() in ALLOWED_INBOX_EXTS]
+        os.makedirs(INBOX_DIR, exist_ok=True)
+        extensions = {".jpg", ".jpeg", ".png", ".webp", ".cr2", ".nef", ".arw", ".dng"}
+        files = [f for f in os.listdir(INBOX_DIR) if os.path.splitext(f)[1].lower() in extensions]
         files.sort()
         return jsonify({"files": files})
     except Exception as exc:
-        return jsonify({"success": False, "error": str(exc)}), 500
+        return jsonify({"files": [], "error": str(exc)})
 
 
 @app.route("/api/inbox-preview/<path:filename>")
@@ -1003,8 +998,8 @@ def api_claim_inbox():
         cur.execute("UPDATE products SET photos=?, updated_at=CURRENT_TIMESTAMP WHERE id = ? AND catalogue_id = ?", (json.dumps(photos), product_id, catalogue_id))
         conn.commit()
         conn.close()
-        threading.Thread(target=process_photo_async, args=(new_name,), daemon=True).start()
-        return jsonify({"success": True, "filename": new_name, "url": f"/static/uploads/{new_name}", "processing": True})
+        _process_uploaded_file_inplace(final_path)
+        return jsonify({"success": True, "filename": new_name, "url": f"/static/uploads/{new_name}", "processing": False})
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
 
@@ -1178,20 +1173,88 @@ def api_rembg_warmup():
 @app.route("/api/generate-description", methods=["POST"])
 def api_generate_description():
     try:
+        data = request.get_json(silent=True) or {}
+        product_id = data.get("product_id")
+        if product_id is None:
+            return jsonify({"success": False, "error": "product_id required"}), 400
+        try:
+            product_id = int(product_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Invalid product_id"}), 400
+
         catalogue_id = get_current_catalogue_id()
-        payload = request.get_json(silent=True) or {}
-        product_id = int(payload.get("product_id", 0))
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT * FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
-        row = cur.fetchone()
+        product = cur.fetchone()
         conn.close()
-        if not row:
+
+        if not product:
             return jsonify({"success": False, "error": "Product not found"}), 404
-        result = _call_groq_generate(product_to_dict(row))
-        return jsonify(result)
-    except Exception as exc:
-        return jsonify({"success": False, "error": str(exc)}), 500
+
+        api_key = (get_setting("groq_api_key") or "").strip()
+        if not api_key:
+            return jsonify({"success": False, "error": "Groq API key not configured. Go to Settings."}), 400
+
+        sku = (product["shopify_sku"] or "").strip() or generate_shopify_sku(product["category"], product["stock_code"])
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "max_tokens": 200,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a professional product copywriter for a South African trailer parts company. "
+                            "Write clear accurate product descriptions for a Shopify store. English only. "
+                            "60 to 120 words. No bullet points. No headings. "
+                            "Focus on what the part is what it does and what trailers it suits."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Write a product description for: Name: {product['name']} "
+                            f"Category: {product['category'] or ''} SKU: {sku}. "
+                            "Write the description paragraph only."
+                        ),
+                    },
+                ],
+            },
+            timeout=30,
+        )
+        try:
+            result = response.json()
+        except ValueError:
+            print(f"AI description non-JSON response: {response.text[:500]}")
+            return jsonify({"success": False, "error": "Groq returned an invalid response"}), 502
+
+        if response.status_code != 200:
+            err = ""
+            if isinstance(result, dict):
+                err = (result.get("error") or {}).get("message") if isinstance(result.get("error"), dict) else str(result.get("error", ""))
+            print(f"AI description error: {response.status_code} {result}")
+            return jsonify({"success": False, "error": err or response.text[:300] or f"HTTP {response.status_code}"}), 502
+
+        try:
+            description = result["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            print(f"AI description parse error: {exc} body={result}")
+            return jsonify({"success": False, "error": "Groq response missing description text"}), 502
+
+        if not description:
+            return jsonify({"success": False, "error": "Groq returned empty description"})
+
+        return jsonify({"success": True, "description": description})
+    except Exception as e:
+        print(f"AI description error: {e}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":

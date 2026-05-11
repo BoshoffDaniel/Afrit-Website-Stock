@@ -8,6 +8,7 @@
 </head>
 <body class="product-embed-root">
 {% include "_product_body.html" %}
+<script>window.PRODUCT_ID = {{ product.id }};</script>
 <script src="{{ url_for('static', filename='app.js', v='20260512hub') }}"></script>
 <script>initProductPage();</script>
 </body>

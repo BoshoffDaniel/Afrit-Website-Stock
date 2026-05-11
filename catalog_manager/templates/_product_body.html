@@ -28,7 +28,6 @@
   </section>
 
   <section class="right-col">
-    <div id="autoSaveIndicator" class="auto-save-indicator">Auto-saving...</div>
     <div class="product-head">
       <div class="stock" id="displayStockHeader">{{ product.stock_code }}</div>
       <div class="name" id="displayNameHeader">{{ product.name }}</div>
@@ -66,13 +65,17 @@
     <div class="form-field">
       <label>Web Description <button class="btn btn-small" id="aiDescBtn" type="button" {% if not groq_configured %}disabled{% endif %}>AI Write Description</button></label>
       <textarea id="web_description" rows="8" placeholder="Write a customer-friendly product description...">{{ product.web_description }}</textarea>
-      <small class="sub" id="aiHint">{% if groq_configured %}AI generated — please review and edit as needed{% else %}Add Groq API key in Settings to enable AI descriptions{% endif %}</small>
-      <div id="aiDescStatus" class="save-status"></div>
+      <small class="sub" id="aiHint">{% if groq_configured %}Use AI Write Description to draft text, then review below.{% else %}Add Groq API key in Settings to enable AI descriptions{% endif %}</small>
+      <div id="aiDescStatus" class="save-status" role="status"></div>
     </div>
 
-    <div class="row-2">
-      <div class="form-field"><label>Sell Price (R)</label><input id="sell_price" type="number" step="0.01" value="{{ product.sell_price if product.sell_price is not none else '' }}"></div>
-      <div class="form-field"><label>Compare Price (R) — optional</label><input id="compare_price" type="number" step="0.01" value="{{ product.compare_price if product.compare_price is not none else '' }}"></div>
+    <div class="form-field">
+      <label for="sell_price">Sell price (R)</label>
+      <input id="sell_price" class="input-full-width" type="number" step="0.01" value="{{ product.sell_price if product.sell_price is not none else '' }}">
+    </div>
+    <div class="form-field">
+      <label for="compare_price">Compare price (R) — optional</label>
+      <input id="compare_price" class="input-full-width" type="number" step="0.01" value="{{ product.compare_price if product.compare_price is not none else '' }}">
     </div>
 
     <div class="form-field">
@@ -91,6 +94,7 @@
     <button id="statusToggle" class="status-toggle {% if product.status == 'done' %}done{% else %}pending{% endif %}">
       {% if product.status == 'done' %}DONE ✓{% else %}PENDING{% endif %}
     </button>
+    <input type="hidden" id="statusValue" value="{{ product.status }}">
 
     <div class="panel shopify-panel">
       {% if not shopify_configured %}
@@ -113,8 +117,8 @@
     <div id="deleteProductStatus" class="save-status"></div>
 
     <div class="nav-buttons">
-      <button type="button" class="btn btn-light" id="prevBtn" data-id="{{ previous.id }}" {% if embed %}data-hub-href="{{ url_for('products_hub', selected=previous.id) }}"{% endif %}>← {{ previous.stock_code }}</button>
-      <button type="button" class="btn btn-light" id="nextBtn" data-id="{{ next_item.id }}" {% if embed %}data-hub-href="{{ url_for('products_hub', selected=next_item.id) }}"{% endif %}>{{ next_item.stock_code }} →</button>
+      <button type="button" class="btn btn-light" id="prevBtn" data-id="{{ previous.id }}">← {{ previous.stock_code }}</button>
+      <button type="button" class="btn btn-light" id="nextBtn" data-id="{{ next_item.id }}">{{ next_item.stock_code }} →</button>
     </div>
     <div class="progress-line">Product {{ position }} of {{ target_total }} — {{ stats.done }} complete ({{ stats.percent }}%)</div>
   </section>

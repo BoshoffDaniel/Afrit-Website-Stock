@@ -2,8 +2,8 @@
 {% block title %}{{ product.stock_code }} - Catalog Manager{% endblock %}
 {% block content %}
 {% if not embed %}
-<a href="{{ url_for('products_hub', selected=product.id) }}" class="back-dashboard-btn">← Back to Products</a>
+<a href="{{ url_for('index') }}" class="back-dashboard-btn">← Back to Dashboard</a>
 {% endif %}
 {% include "_product_body.html" %}
 {% endblock %}
-{% block scripts %}<script>initProductPage();</script>{% endblock %}
+{% block scripts %}<script>window.PRODUCT_ID = {{ product.id }};</script><script>initProductPage();</script>{% endblock %}

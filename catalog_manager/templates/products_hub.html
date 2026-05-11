@@ -2,11 +2,16 @@
 {% block title %}Products - Catalog Manager{% endblock %}
 {% block content %}
 <div class="products-hub">
-  <header class="products-hub-head">
+  <header class="dash-head premium-head">
     <div>
       <div class="crumbs">Home / Products / {{ current_catalogue_name }}</div>
-      <h1>Products</h1>
-      <p class="sub">Manage products and categories for this catalogue.</p>
+      <div class="dash-brand"><span class="k-accent"></span><h1>Products</h1></div>
+      <p class="sub head-sub">Manage products and categories for this catalogue.</p>
+    </div>
+    <div class="dash-actions">
+      <span class="sync-pill {% if shopify_configured %}ok{% else %}warn{% endif %}">
+        {% if shopify_configured %}Last sync ready{% else %}Sync not configured{% endif %}
+      </span>
     </div>
   </header>
 
@@ -41,6 +46,42 @@
   </section>
 
   {% else %}
+  <section class="stats-grid bento-grid products-hub-bento">
+    <article class="stat-card blue kpi-card">
+      <div class="kpi-top"><span>Total Products</span><span class="trend up">+2.4%</span></div>
+      <div class="stat-value">{{ stats.total }}</div>
+      <div class="mini-spark"><span style="width:58%"></span></div>
+    </article>
+    <article class="stat-card green kpi-card">
+      <div class="kpi-top"><span>Done</span><span class="trend up">+4.8%</span></div>
+      <div class="stat-value">{{ stats.done }}</div>
+      <div class="mini-spark"><span style="width:{{ stats.percent }}%"></span></div>
+    </article>
+    <article class="stat-card orange kpi-card">
+      <div class="kpi-top"><span>Pending</span><span class="trend flat">-0.8%</span></div>
+      <div class="stat-value">{{ stats.pending }}</div>
+      <div class="mini-spark"><span style="width:{% if stats.total %}{{ (stats.pending / stats.total * 100)|round(0)|int }}{% else %}0{% endif %}%"></span></div>
+    </article>
+    <article class="stat-card purple kpi-card">
+      <div class="kpi-top"><span>% Complete</span><span class="trend up">Goal</span></div>
+      <div class="stat-value">{{ stats.percent }}%</div>
+      <div class="mini-spark"><span style="width:{{ stats.percent }}%"></span></div>
+    </article>
+  </section>
+
+  <section class="progress-wrap products-hub-progress">
+    <div class="progress-meta">{{ stats.done }} of {{ target_total }} products complete</div>
+    <div class="progress-bar"><div class="progress-fill" style="width: {{ stats.percent }}%"></div></div>
+  </section>
+
+  <section class="shopify-bar {% if shopify_configured %}ok{% else %}warn{% endif %} products-hub-shopify">
+    {% if shopify_configured %}
+      Shopify connected — {{ stats.pushed }} pushed, {{ ready_to_push }} ready to push
+    {% else %}
+      Shopify not connected — add API key in Settings
+    {% endif %}
+  </section>
+
   <div class="products-split">
     <aside class="products-list-panel">
       <div class="products-list-toolbar">
@@ -97,6 +138,7 @@
                 {% endif %}
                 <span class="badge badge-{{ p.status }}">{{ p.status|upper }}</span>
               </span>
+              <span class="products-list-edit-hint">Edit</span>
             </span>
           </a>
         </li>
@@ -134,8 +176,7 @@
       {% else %}
       <div class="products-detail-empty panel">
         <h3>Select a product</h3>
-        <p class="sub">Choose a product from the list, or create a new one.</p>
-        <a class="btn btn-green" href="{{ url_for('products_hub', new='1') }}"><span class="admin-lock-inline" aria-hidden="true">🔒</span> + Add Product</a>
+        <p class="sub">Choose a product from the list on the left. To add a product, use <strong>+ Add Product</strong> above the list.</p>
       </div>
       {% endif %}
     </div>
