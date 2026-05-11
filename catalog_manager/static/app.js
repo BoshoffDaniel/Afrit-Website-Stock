@@ -9,6 +9,23 @@
     };
   };
 
+  const parseSaveResponse = async (res) => {
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    if (!res.ok && !ct.includes("application/json")) {
+      const txt = await res.text();
+      throw new Error((txt && txt.slice(0, 280).replace(/\s+/g, " ").trim()) || `Request failed (${res.status})`);
+    }
+    if (!ct.includes("application/json")) {
+      const txt = await res.text();
+      throw new Error((txt && txt.slice(0, 280).replace(/\s+/g, " ").trim()) || "Server did not return JSON");
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+    return data;
+  };
+
   let adminModalPromiseResolve = null;
 
   function openAdminModal() {
@@ -147,7 +164,7 @@
       rows.forEach((row) => {
         const hay = `${row.dataset.stock} ${row.dataset.name} ${row.dataset.category}`;
         const qOk = !q || hay.includes(q);
-        const cOk = !c || row.dataset.category === c;
+        const cOk = !c || (c === "__empty__" ? row.dataset.uncategorised === "1" : row.dataset.category === c);
         const sOk = !s || (s === "pushed" ? row.dataset.pushed === "1" : row.dataset.status === s);
         const show = qOk && cOk && sOk;
         row.style.display = show ? "" : "none";
@@ -333,7 +350,7 @@
         items.forEach((row) => {
           const hay = `${row.dataset.stock} ${row.dataset.name} ${row.dataset.category}`;
           const qOk = !q || hay.includes(q);
-          const cOk = !c || row.dataset.category === c;
+          const cOk = !c || (c === "__empty__" ? row.dataset.uncategorised === "1" : row.dataset.category === c);
           const sOk = !s || (s === "pushed" ? row.dataset.pushed === "1" : row.dataset.status === s);
           row.classList.toggle("hidden", !(qOk && cOk && sOk));
         });
@@ -458,26 +475,31 @@
 
     const saveProduct = async (redirectAfter) => {
       setStatusMsg("Saving...");
-      const res = await fetch(`/product/${productId}/save`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(collectPayload()),
-      });
-      const respData = await res.json();
-      if (!respData.success) {
-        setStatusMsg(respData.error || "Save failed", "error");
+      try {
+        const res = await fetch(`/product/${productId}/save`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(collectPayload()),
+        });
+        const respData = await parseSaveResponse(res);
+        if (!respData.success) {
+          setStatusMsg(respData.error || "Save failed", "error");
+          return false;
+        }
+        setStatusMsg("Saved!", "ok");
+        document.body.classList.add("flash-green");
+        setTimeout(() => document.body.classList.remove("flash-green"), 450);
+        if (redirectAfter) {
+          setTimeout(() => {
+            if (embed) window.parent.location.href = `/products?selected=${productId}`;
+            else window.location.href = "/products";
+          }, 800);
+        }
+        return true;
+      } catch (e) {
+        setStatusMsg(e.message || "Save failed — check your connection.", "error");
         return false;
       }
-      setStatusMsg("Saved!", "ok");
-      document.body.classList.add("flash-green");
-      setTimeout(() => document.body.classList.remove("flash-green"), 450);
-      if (redirectAfter) {
-        setTimeout(() => {
-          if (embed) window.parent.location.href = `/products?selected=${productId}`;
-          else window.location.href = "/products";
-        }, 800);
-      }
-      return true;
     };
 
     const pollPhoto = (filename) => {
@@ -732,6 +754,481 @@
     renderPhotoGrid();
     pollInbox();
     setInterval(pollInbox, 2000);
+  };
+
+  window.initProductHubPanel = function () {
+    const cfgEl = byId("hubPanelConfig");
+    const shell = byId("hubProductDetailShell");
+    if (!cfgEl || !shell) return;
+    const cfg = JSON.parse(cfgEl.textContent);
+    let current = cfg.product;
+    const categoryNames = new Set(cfg.categoryNames || []);
+    const shopifyConfigured = !!cfg.shopifyConfigured;
+    const productId = current.id;
+    let productStatus = current.status === "done" ? "done" : "pending";
+    let hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
+    let dragged = null;
+    const lightbox = createLightbox();
+
+    const ro = {
+      read: byId("hubPanelReadonly"),
+      edit: byId("hubPanelEdit"),
+      editBtn: byId("hubPanelEditBtn"),
+      saveBtn: byId("hubPanelSaveBtn"),
+      cancelBtn: byId("hubPanelCancelBtn"),
+      autoInd: byId("hubPanelAutoIndicator"),
+      saveErr: byId("hubPanelSaveError"),
+    };
+
+    const esc = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+    const shopifyRoHtml = (p) => {
+      if (!shopifyConfigured) return '<span class="sub">Not configured</span>';
+      if (p.shopify_pushed) {
+        return `<span class="shopify-dot green"></span> Pushed${p.shopify_pushed_at ? ` — ${esc(p.shopify_pushed_at)}` : ""}`;
+      }
+      if (p.shopify_id) return '<span class="shopify-dot orange"></span> Needs re-push';
+      return '<span class="shopify-dot grey"></span> Not pushed';
+    };
+
+    const applyReadonly = (p) => {
+      byId("hubRoStockCode").textContent = p.stock_code || "";
+      byId("hubRoName").textContent = p.name || "";
+      const catWrap = byId("hubRoCategoryWrap");
+      const c = (p.category || "").trim();
+      if (c) {
+        catWrap.innerHTML = `<span id="hubRoCategory">${esc(c)}</span>`;
+      } else {
+        catWrap.innerHTML = '<span class="badge badge-uncategorised" id="hubRoCategory">Uncategorised</span>';
+      }
+      byId("hubRoSupplier").textContent = p.supplier || "—";
+      byId("hubRoShopifySku").textContent = p.shopify_sku || "—";
+      byId("hubRoSellPrice").textContent = p.sell_price != null ? String(p.sell_price) : "—";
+      byId("hubRoComparePrice").textContent = p.compare_price != null ? String(p.compare_price) : "—";
+      const badge = byId("hubRoStatusBadge");
+      badge.textContent = (p.status || "pending").toUpperCase();
+      badge.className = `badge badge-${p.status || "pending"}`;
+      byId("hubRoShopifyPush").innerHTML = shopifyRoHtml(p);
+      byId("hubRoWebDesc").textContent = p.web_description || "—";
+      byId("hubRoNotes").textContent = p.notes || "—";
+      const grid = byId("hubRoPhotoGrid");
+      if (p.photos && p.photos.length) {
+        grid.innerHTML = p.photos.map((fn) => `<img class="hub-ro-thumb" src="/static/uploads/${esc(fn)}?t=${Date.now()}" alt="">`).join("");
+      } else {
+        grid.innerHTML = '<span class="sub">No photos yet</span>';
+      }
+      const pushBtn = byId("hubReadonlyPushBtn");
+      if (pushBtn) pushBtn.textContent = p.shopify_pushed ? "Re-push" : "Push to Shopify";
+    };
+
+    const updateListRow = (p) => {
+      const li = document.querySelector(`.products-list-item[data-id="${p.id}"]`);
+      if (!li) return;
+      const cat = (p.category || "").trim();
+      li.dataset.stock = (p.stock_code || "").toLowerCase();
+      li.dataset.name = (p.name || "").toLowerCase();
+      li.dataset.category = cat.toLowerCase();
+      li.dataset.uncategorised = cat ? "0" : "1";
+      li.dataset.status = p.status || "pending";
+      li.dataset.pushed = p.shopify_pushed ? "1" : "0";
+      const codeEl = li.querySelector(".products-list-code");
+      const nameEl = li.querySelector(".products-list-name");
+      const badges = li.querySelector(".products-list-badges");
+      if (codeEl) codeEl.textContent = p.stock_code;
+      if (nameEl) nameEl.textContent = p.name;
+      if (badges) {
+        const catHtml = cat
+          ? `<span class="products-list-cat">${esc(cat)}</span>`
+          : '<span class="badge badge-uncategorised">Uncategorised</span>';
+        badges.innerHTML = `${catHtml}<span class="badge badge-${p.status || "pending"}">${(p.status || "pending").toUpperCase()}</span>`;
+      }
+    };
+
+    const addCategoryToSelect = (name) => {
+      const n = (name || "").trim();
+      if (!n || categoryNames.has(n)) return;
+      categoryNames.add(n);
+      const sel = byId("hubEditCategorySelect");
+      const empty = sel.querySelector("option[value=\"\"]");
+      const marker = sel.querySelector('option[value="__new__"]');
+      const middle = Array.from(sel.options).filter((o) => o.value && o.value !== "__new__" && o.value !== "");
+      const opt = document.createElement("option");
+      opt.value = n;
+      opt.textContent = n;
+      middle.push(opt);
+      middle.sort((a, b) => a.text.localeCompare(b.text, undefined, { sensitivity: "base" }));
+      sel.innerHTML = "";
+      sel.appendChild(empty);
+      middle.forEach((o) => {
+        const x = document.createElement("option");
+        x.value = o.value;
+        x.textContent = o.textContent;
+        sel.appendChild(x);
+      });
+      sel.appendChild(marker);
+    };
+
+    const addHubFilterCategory = (cat) => {
+      const n = (cat || "").trim();
+      if (!n) return;
+      const sel = byId("hubCategoryFilter");
+      if (!sel) return;
+      const v = n.toLowerCase();
+      if (Array.from(sel.options).some((o) => o.value === v)) return;
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = n;
+      sel.appendChild(opt);
+    };
+
+    const syncCategorySelect = (catRaw) => {
+      const sel = byId("hubEditCategorySelect");
+      const wrap = byId("hubEditCategoryNewWrap");
+      const inp = byId("hubEditCategoryNew");
+      const c = (catRaw || "").trim();
+      inp.value = "";
+      wrap.classList.add("hidden");
+      if (!c) {
+        sel.value = "";
+        return;
+      }
+      let found = false;
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === c) {
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        sel.value = c;
+        return;
+      }
+      sel.value = "__new__";
+      wrap.classList.remove("hidden");
+      inp.value = c;
+    };
+
+    const collectCategory = () => {
+      const sel = byId("hubEditCategorySelect").value;
+      if (sel === "__new__") return (byId("hubEditCategoryNew").value || "").trim();
+      return sel.trim();
+    };
+
+    const pushFromFormToEditor = () => {
+      byId("hubEditStockCode").value = current.stock_code || "";
+      byId("hubEditName").value = current.name || "";
+      syncCategorySelect(current.category);
+      byId("hubEditSupplier").value = current.supplier || "";
+      byId("hubEditShopifySku").value = current.shopify_sku || "";
+      byId("hubEditWebDesc").value = current.web_description || "";
+      byId("hubEditSellPrice").value = current.sell_price != null ? String(current.sell_price) : "";
+      byId("hubEditComparePrice").value = current.compare_price != null ? String(current.compare_price) : "";
+      byId("hubEditTags").value = current.tags || "";
+      byId("hubEditNotes").value = current.notes || "";
+      productStatus = current.status === "done" ? "done" : "pending";
+      const st = byId("hubEditStatusToggle");
+      st.classList.toggle("done", productStatus === "done");
+      st.classList.toggle("pending", productStatus !== "done");
+      st.textContent = productStatus === "done" ? "DONE ✓" : "PENDING";
+      hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
+      renderHubPhotos();
+    };
+
+    const collectPhotosFromGrid = () => {
+      const grid = byId("hubEditPhotoGrid");
+      if (!grid) return hubPhotos.slice();
+      const fromDom = Array.from(grid.querySelectorAll(".thumb"))
+        .map((el) => el.dataset.filename)
+        .filter((name) => name && String(name).trim());
+      return fromDom.length ? fromDom : hubPhotos.slice();
+    };
+
+    const collectPayload = () => ({
+      stock_code: byId("hubEditStockCode").value,
+      name: byId("hubEditName").value,
+      category: collectCategory(),
+      supplier: byId("hubEditSupplier").value,
+      web_description: byId("hubEditWebDesc").value,
+      sell_price: byId("hubEditSellPrice").value,
+      compare_price: byId("hubEditComparePrice").value,
+      tags: byId("hubEditTags").value,
+      notes: byId("hubEditNotes").value,
+      status: productStatus,
+      shopify_sku: byId("hubEditShopifySku").value,
+      photos: collectPhotosFromGrid(),
+    });
+
+    const showAuto = (msg, isError) => {
+      const el = ro.autoInd;
+      el.textContent = msg;
+      el.classList.remove("hidden");
+      el.style.color = isError ? "#b91c1c" : "";
+      if (!isError && msg === "Saved ✓") {
+        setTimeout(() => {
+          el.classList.add("hidden");
+          el.textContent = "";
+        }, 2500);
+      }
+    };
+
+    const scheduleAutoSave = debounce(async () => {
+      if (ro.edit.classList.contains("hidden")) return;
+      showAuto("Saving...", false);
+      ro.saveErr.classList.add("hidden");
+      ro.saveErr.textContent = "";
+      try {
+        const res = await fetch(`/product/${productId}/save`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(collectPayload()),
+        });
+        const data = await parseSaveResponse(res);
+        if (!data.success) {
+          showAuto(data.error || "Save failed", true);
+          ro.saveErr.textContent = data.error || "Save failed";
+          ro.saveErr.classList.remove("hidden");
+          return;
+        }
+        current = data.product;
+        hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
+        applyReadonly(current);
+        updateListRow(current);
+        const nc = (current.category || "").trim();
+        if (nc) {
+          addCategoryToSelect(nc);
+          addHubFilterCategory(nc);
+        }
+        showAuto("Saved ✓", false);
+      } catch (e) {
+        const msg = e.message || "Save failed";
+        showAuto(msg, true);
+        ro.saveErr.textContent = msg;
+        ro.saveErr.classList.remove("hidden");
+      }
+    }, 3000);
+
+    const saveBtnDefault = "Save Changes";
+
+    const saveOnce = async (exitEdit) => {
+      ro.saveErr.classList.add("hidden");
+      ro.saveErr.textContent = "";
+      ro.saveBtn.disabled = true;
+      const prevColor = ro.saveBtn.style.color;
+      ro.saveBtn.textContent = "Saving...";
+      ro.saveBtn.style.color = "";
+      try {
+        const res = await fetch(`/product/${productId}/save`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(collectPayload()),
+        });
+        const data = await parseSaveResponse(res);
+        if (!data.success) {
+          ro.saveErr.textContent = data.error || "Save failed";
+          ro.saveErr.classList.remove("hidden");
+          ro.saveBtn.textContent = "Save Failed";
+          ro.saveBtn.style.color = "#b91c1c";
+          setTimeout(() => {
+            ro.saveBtn.textContent = saveBtnDefault;
+            ro.saveBtn.style.color = prevColor;
+          }, 2500);
+          return false;
+        }
+        current = data.product;
+        hubPhotos = Array.isArray(current.photos) ? current.photos.slice() : [];
+        applyReadonly(current);
+        updateListRow(current);
+        const nc = (current.category || "").trim();
+        if (nc) {
+          addCategoryToSelect(nc);
+          addHubFilterCategory(nc);
+        }
+        ro.saveBtn.textContent = "Saved ✓";
+        ro.saveBtn.style.color = "";
+        setTimeout(() => {
+          ro.saveBtn.textContent = saveBtnDefault;
+        }, 2000);
+        if (exitEdit) {
+          ro.read.classList.remove("hidden");
+          ro.edit.classList.add("hidden");
+          ro.editBtn.classList.remove("hidden");
+          ro.autoInd.classList.add("hidden");
+        }
+        return true;
+      } catch (e) {
+        const msg = e.message || "Save failed — check your connection.";
+        ro.saveErr.textContent = msg;
+        ro.saveErr.classList.remove("hidden");
+        ro.saveBtn.textContent = "Save Failed";
+        ro.saveBtn.style.color = "#b91c1c";
+        setTimeout(() => {
+          ro.saveBtn.textContent = saveBtnDefault;
+          ro.saveBtn.style.color = prevColor;
+        }, 2500);
+        return false;
+      } finally {
+        ro.saveBtn.disabled = false;
+      }
+    };
+
+    const renderHubPhotos = () => {
+      const grid = byId("hubEditPhotoGrid");
+      grid.innerHTML = "";
+      hubPhotos.forEach((name, idx) => {
+        const el = document.createElement("div");
+        el.className = "thumb";
+        el.draggable = true;
+        el.dataset.filename = name;
+        el.innerHTML = `${idx === 0 ? '<div class="main-label">★ Main</div>' : ""}<img src="/static/uploads/${name}?t=${Date.now()}" alt=""><button type="button" class="delete-btn">×</button>`;
+        el.querySelector("img").addEventListener("click", () => {
+          lightbox.open({
+            imageSrc: `/static/uploads/${name}?t=${Date.now()}`,
+            mode: "saved",
+            onDelete: async () => {
+              await fetch("/api/delete-photo", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ filename: name, product_id: productId }),
+              }).then((r) => r.json());
+              hubPhotos = hubPhotos.filter((p) => p !== name);
+              renderHubPhotos();
+              scheduleAutoSave();
+              lightbox.close();
+            },
+          });
+        });
+        el.querySelector(".delete-btn").addEventListener("click", async () => {
+          await fetch("/api/delete-photo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: name, product_id: productId }),
+          }).then((r) => r.json());
+          hubPhotos = hubPhotos.filter((p) => p !== name);
+          renderHubPhotos();
+          scheduleAutoSave();
+        });
+        el.addEventListener("dragstart", () => { dragged = name; });
+        el.addEventListener("dragover", (e) => e.preventDefault());
+        el.addEventListener("drop", async (e) => {
+          e.preventDefault();
+          const target = name;
+          if (!dragged || dragged === target) return;
+          const from = hubPhotos.indexOf(dragged);
+          const to = hubPhotos.indexOf(target);
+          const [moved] = hubPhotos.splice(from, 1);
+          hubPhotos.splice(to, 0, moved);
+          renderHubPhotos();
+          await fetch("/api/reorder-photos", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ product_id: productId, filenames: hubPhotos }),
+          });
+          scheduleAutoSave();
+        });
+        grid.appendChild(el);
+      });
+    };
+
+    const bindUpload = () => {
+      const zone = byId("hubEditUploadZone");
+      const input = byId("hubEditUploadInput");
+      const err = byId("hubEditUploadError");
+      const doUpload = async (files) => {
+        err.textContent = "";
+        for (const file of Array.from(files)) {
+          const fd = new FormData();
+          fd.append("photo", file);
+          fd.append("product_id", String(productId));
+          const res = await fetch("/api/upload-photo", { method: "POST", body: fd });
+          const d = await res.json();
+          if (!d.success) {
+            err.textContent = d.error || "Upload failed";
+            continue;
+          }
+          hubPhotos.push(d.filename);
+          renderHubPhotos();
+          const poll = async () => {
+            const statusRes = await fetch(`/api/photo-status/${encodeURIComponent(d.filename)}`);
+            const st = await statusRes.json();
+            if (st.status === "done") renderHubPhotos();
+            else setTimeout(poll, 1200);
+          };
+          if (d.processing) poll();
+          scheduleAutoSave();
+        }
+      };
+      zone.addEventListener("click", () => input.click());
+      input.addEventListener("change", (e) => doUpload(e.target.files));
+      ["dragenter", "dragover"].forEach((evt) => zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.add("drag-over"); }));
+      ["dragleave", "drop"].forEach((evt) => zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.remove("drag-over"); }));
+      zone.addEventListener("drop", (e) => doUpload(e.dataTransfer.files));
+    };
+
+    byId("hubEditCategorySelect").addEventListener("change", () => {
+      const w = byId("hubEditCategoryNewWrap");
+      if (byId("hubEditCategorySelect").value === "__new__") w.classList.remove("hidden");
+      else w.classList.add("hidden");
+      scheduleAutoSave();
+    });
+
+    byId("hubEditRegenSku").addEventListener("click", () => {
+      const cat = collectCategory().replace(/[^A-Za-z]/g, "");
+      const prefix = cat ? cat.slice(0, 3).toUpperCase() : "GEN";
+      byId("hubEditShopifySku").value = `${prefix}-${byId("hubEditStockCode").value.trim()}`;
+      scheduleAutoSave();
+    });
+
+    byId("hubEditStatusToggle").addEventListener("click", () => {
+      productStatus = productStatus === "pending" ? "done" : "pending";
+      const st = byId("hubEditStatusToggle");
+      st.classList.toggle("done", productStatus === "done");
+      st.classList.toggle("pending", productStatus !== "done");
+      st.textContent = productStatus === "done" ? "DONE ✓" : "PENDING";
+      scheduleAutoSave();
+    });
+
+    ["hubEditStockCode", "hubEditName", "hubEditSupplier", "hubEditWebDesc", "hubEditSellPrice", "hubEditComparePrice", "hubEditTags", "hubEditNotes", "hubEditCategoryNew"].forEach((id) => {
+      const el = byId(id);
+      if (el) {
+        el.addEventListener("input", () => scheduleAutoSave());
+        el.addEventListener("change", () => scheduleAutoSave());
+      }
+    });
+
+    ro.editBtn.addEventListener("click", () => {
+      pushFromFormToEditor();
+      ro.read.classList.add("hidden");
+      ro.edit.classList.remove("hidden");
+      ro.editBtn.classList.add("hidden");
+    });
+
+    ro.cancelBtn.addEventListener("click", () => {
+      window.location.reload();
+    });
+
+    ro.saveBtn.addEventListener("click", async () => {
+      await saveOnce(true);
+    });
+
+    const pushBtn = byId("hubReadonlyPushBtn");
+    if (pushBtn) {
+      pushBtn.addEventListener("click", async () => {
+        const status = byId("hubReadonlyPushStatus");
+        pushBtn.disabled = true;
+        status.textContent = "Pushing...";
+        const res = await fetch(`/api/push-to-shopify/${productId}`, { method: "POST" });
+        const d = await res.json();
+        if (d.success) window.location.reload();
+        else {
+          status.textContent = d.error || "Push failed";
+          pushBtn.disabled = false;
+        }
+      });
+    }
+
+    applyReadonly(current);
+    bindUpload();
+    renderHubPhotos();
   };
 
   function createLightbox() {

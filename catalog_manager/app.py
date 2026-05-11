@@ -361,9 +361,38 @@ def products_hub():
     conn.close()
     category_options = list_category_labels(catalogue_id)
     categories_full = list_categories_with_counts(catalogue_id) if tab == "categories" else []
+    category_options_sorted = sorted(category_options, key=lambda x: (x or "").lower())
     ids = {p["id"] for p in products}
     if selected_id is not None and selected_id not in ids:
         selected_id = None
+
+    selected_product = None
+    previous_item = None
+    next_item = None
+    position = 0
+    target_total = int(get_catalogue_setting(catalogue_id, "products_total_target") or "2036")
+    stats = {}
+    needs_repush = False
+    show_new_panel = request.args.get("new") == "1" and not selected_id
+    if selected_id and not show_new_panel:
+        for p in products:
+            if p["id"] == selected_id:
+                selected_product = p
+                break
+        if selected_product:
+            all_nav = [{"id": p["id"], "stock_code": p["stock_code"]} for p in products]
+            pos = next((i for i, x in enumerate(all_nav) if x["id"] == selected_id), 0)
+            position = pos + 1
+            previous_item = all_nav[pos - 1] if pos > 0 else all_nav[-1]
+            next_item = all_nav[pos + 1] if pos < len(all_nav) - 1 else all_nav[0]
+            stats = get_counts(catalogue_id)
+            needs_repush = bool(
+                selected_product["shopify_pushed"]
+                and selected_product.get("shopify_pushed_at")
+                and selected_product.get("updated_at")
+                and selected_product["updated_at"] > selected_product["shopify_pushed_at"]
+            )
+
     return render_template(
         "products_hub.html",
         products=products,
@@ -371,7 +400,15 @@ def products_hub():
         selected_id=selected_id,
         is_new=is_new and not selected_id,
         category_options=category_options,
+        category_options_sorted=category_options_sorted,
         categories_full=categories_full,
+        selected_product=selected_product,
+        previous_item=previous_item,
+        next_item=next_item,
+        panel_position=position,
+        panel_target_total=target_total,
+        panel_stats=stats,
+        panel_needs_repush=needs_repush,
     )
 
 
@@ -425,13 +462,13 @@ def api_create_product():
             (stock_code, name, category, handle, shopify_sku, catalogue_id),
         )
         product_id = cur.lastrowid
-        ensure_category_row(catalogue_id, category)
+        ensure_category_row(catalogue_id, category, conn=conn)
         conn.commit()
         conn.close()
         return jsonify({"success": True, "id": product_id})
     except sqlite3.IntegrityError:
         conn.close()
-        return jsonify({"success": False, "error": f"Stock code '{stock_code}' already exists."}), 400
+        return jsonify({"success": False, "error": "Stock code already exists"}), 400
 
 
 @app.route("/api/products/<int:product_id>", methods=["DELETE"])
@@ -755,9 +792,11 @@ def product_page(product_id):
 def save_product(product_id):
     catalogue_id = get_current_catalogue_id()
     payload = request.get_json(silent=True) or {}
+    print("Received save data:", payload)
     photos = payload.get("photos", [])
     if not isinstance(photos, list):
         photos = []
+    photo_paths = [os.path.basename(str(p)) for p in photos if p is not None and str(p).strip()]
     status = payload.get("status", "pending")
     if status not in ("pending", "done"):
         status = "pending"
@@ -767,58 +806,72 @@ def save_product(product_id):
     stock_code_new = (payload.get("stock_code") or "").strip()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT stock_code, name FROM products WHERE id = ? AND catalogue_id = ?",
-        (product_id, catalogue_id),
-    )
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"success": False, "error": "Product not found"}), 404
-    old_code = row["stock_code"]
-    old_name = row["name"]
-    if not stock_code_new:
-        stock_code_new = old_code
-    if stock_code_new != old_code:
+    try:
         cur.execute(
-            "SELECT 1 FROM products WHERE stock_code = ? AND id != ?",
-            (stock_code_new, product_id),
+            "SELECT stock_code, name FROM products WHERE id = ? AND catalogue_id = ?",
+            (product_id, catalogue_id),
         )
-        if cur.fetchone():
-            conn.close()
-            return jsonify({"success": False, "error": "Stock code already in use"}), 400
-    display_name = name if name else old_name
-    handle = slugify_text(display_name) or slugify_text(stock_code_new)
-    cur.execute(
-        """
-        UPDATE products
-           SET stock_code = ?, name = ?, category = ?, supplier = ?,
-               web_description = ?, sell_price = ?, compare_price = ?, tags = ?, notes = ?,
-               status = ?, photos = ?, shopify_sku = ?, shopify_handle = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ? AND catalogue_id = ?
-        """,
-        (
-            stock_code_new,
-            display_name,
-            category,
-            supplier,
-            payload.get("web_description", ""),
-            payload.get("sell_price") if payload.get("sell_price") not in ("", None) else None,
-            payload.get("compare_price") if payload.get("compare_price") not in ("", None) else None,
-            payload.get("tags", ""),
-            payload.get("notes", ""),
-            status,
-            json.dumps([os.path.basename(p) for p in photos]),
-            (payload.get("shopify_sku") or "").strip() or None,
-            handle,
-            product_id,
-            catalogue_id,
-        ),
-    )
-    ensure_category_row(catalogue_id, category)
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True})
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+        old_code = row["stock_code"]
+        old_name = row["name"]
+        if not stock_code_new:
+            stock_code_new = old_code
+        if stock_code_new != old_code:
+            cur.execute(
+                "SELECT 1 FROM products WHERE stock_code = ? AND id != ?",
+                (stock_code_new, product_id),
+            )
+            if cur.fetchone():
+                return jsonify({"success": False, "error": "Stock code already exists"}), 400
+        display_name = name if name else old_name
+        handle = slugify_text(display_name) or slugify_text(stock_code_new)
+        cur.execute(
+            """
+            UPDATE products
+               SET stock_code = ?, name = ?, category = ?, supplier = ?,
+                   web_description = ?, sell_price = ?, compare_price = ?, tags = ?, notes = ?,
+                   status = ?, photos = ?, shopify_sku = ?, shopify_handle = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? AND catalogue_id = ?
+            """,
+            (
+                stock_code_new,
+                display_name,
+                category,
+                supplier,
+                payload.get("web_description", ""),
+                payload.get("sell_price") if payload.get("sell_price") not in ("", None) else None,
+                payload.get("compare_price") if payload.get("compare_price") not in ("", None) else None,
+                payload.get("tags", ""),
+                payload.get("notes", ""),
+                status,
+                json.dumps(photo_paths),
+                (payload.get("shopify_sku") or "").strip() or None,
+                handle,
+                product_id,
+                catalogue_id,
+            ),
+        )
+        ensure_category_row(catalogue_id, category, conn=conn)
+        conn.commit()
+        cur.execute("SELECT * FROM products WHERE id = ? AND catalogue_id = ?", (product_id, catalogue_id))
+        row_after = cur.fetchone()
+        if not row_after:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+        return jsonify({"success": True, "product": product_to_dict(row_after)})
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        return jsonify({"success": False, "error": str(exc) or "Database constraint failed"}), 400
+    except sqlite3.OperationalError as exc:
+        conn.rollback()
+        return jsonify({"success": False, "error": f"Database error: {exc}"}), 503
+    except Exception as exc:
+        conn.rollback()
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(exc) or "Save failed"}), 500
+    finally:
+        conn.close()
 
 
 @app.route("/api/upload-photo", methods=["POST"])

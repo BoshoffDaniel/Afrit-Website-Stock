@@ -10,6 +10,7 @@ DB_PATH = os.path.join(DATA_DIR, "catalog.db")
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 8000")
     return conn
 
 
@@ -182,19 +183,30 @@ def get_catalogue_setting(catalogue_id, key):
     return row["value"] if row else None
 
 
-def ensure_category_row(catalogue_id, name):
-    """Ensure a category row exists when a product uses this name."""
+def ensure_category_row(catalogue_id, name, conn=None):
+    """Ensure a category row exists when a product uses this name.
+
+    If ``conn`` is provided, use that connection (no commit/close). Otherwise
+    open a short-lived connection and commit — avoids nested connections
+    that trigger SQLite "database is locked" during an open write transaction.
+    """
     label = (name or "").strip()
     if not label:
         return
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT OR IGNORE INTO categories (catalogue_id, name) VALUES (?, ?)",
-        (int(catalogue_id), label),
-    )
-    conn.commit()
-    conn.close()
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO categories (catalogue_id, name) VALUES (?, ?)",
+            (int(catalogue_id), label),
+        )
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
 
 
 def list_category_labels(catalogue_id):

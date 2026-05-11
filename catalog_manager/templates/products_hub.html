@@ -54,6 +54,7 @@
           <label class="filter-label" for="hubCategoryFilter">Category</label>
           <select id="hubCategoryFilter">
             <option value="">All</option>
+            <option value="__empty__">Uncategorised</option>
             {% for c in category_options %}<option value="{{ c|lower }}">{{ c }}</option>{% endfor %}
           </select>
         </div>
@@ -74,6 +75,7 @@
             data-stock="{{ p.stock_code|lower }}"
             data-name="{{ p.name|lower }}"
             data-category="{{ (p.category or '')|lower }}"
+            data-uncategorised="{% if p.category and p.category.strip() %}0{% else %}1{% endif %}"
             data-status="{{ p.status }}"
             data-pushed="{{ p.shopify_pushed }}">
           <a class="products-list-link" href="{{ url_for('products_hub', selected=p.id) }}">
@@ -87,7 +89,14 @@
             <span class="products-list-body">
               <span class="mono products-list-code">{{ p.stock_code }}</span>
               <span class="products-list-name">{{ p.name }}</span>
-              <span class="badge badge-{{ p.status }}">{{ p.status|upper }}</span>
+              <span class="products-list-badges">
+                {% if p.category and p.category.strip() %}
+                <span class="products-list-cat">{{ p.category }}</span>
+                {% else %}
+                <span class="badge badge-uncategorised">Uncategorised</span>
+                {% endif %}
+                <span class="badge badge-{{ p.status }}">{{ p.status|upper }}</span>
+              </span>
             </span>
           </a>
         </li>
@@ -120,8 +129,8 @@
         <p id="newProductError" class="save-status error"></p>
         <button type="button" class="btn btn-green btn-block" id="createProductSubmitBtn">Create product</button>
       </div>
-      {% elif selected_id %}
-      <iframe class="product-embed-frame" title="Product editor" src="{{ url_for('product_page', product_id=selected_id) }}?embed=1"></iframe>
+      {% elif selected_product %}
+      {% include "_product_hub_detail.html" %}
       {% else %}
       <div class="products-detail-empty panel">
         <h3>Select a product</h3>
@@ -137,5 +146,8 @@
 {% block scripts %}
 <script>
   initProductsHub({ tab: {{ tab|tojson }}, isNew: {{ is_new|tojson }} });
+  {% if selected_product %}
+  initProductHubPanel();
+  {% endif %}
 </script>
 {% endblock %}

@@ -1,0 +1,161 @@
+{# Requires: selected_product, previous_item, next_item, panel_position, panel_target_total, panel_stats, panel_needs_repush, shopify_configured, category_options_sorted #}
+<div class="panel product-hub-detail" id="hubProductDetailShell" data-product-id="{{ selected_product.id }}">
+  <div class="product-detail-toolbar">
+    <div class="product-detail-toolbar-left">
+      {% if previous_item %}
+      <a class="btn btn-light btn-small" href="{{ url_for('products_hub', selected=previous_item.id) }}" title="Previous product">← {{ previous_item.stock_code }}</a>
+      {% endif %}
+      {% if next_item %}
+      <a class="btn btn-light btn-small" href="{{ url_for('products_hub', selected=next_item.id) }}" title="Next product">{{ next_item.stock_code }} →</a>
+      {% endif %}
+    </div>
+    <div class="product-detail-toolbar-right">
+      <span id="hubPanelAutoIndicator" class="hub-auto-save-badge hidden" aria-live="polite"></span>
+      <button type="button" class="btn btn-green" id="hubPanelEditBtn">Edit</button>
+    </div>
+  </div>
+
+  <div id="hubPanelReadonly" class="product-panel-readonly">
+    <div class="hub-ro-header">
+      <div class="hub-ro-stock" id="hubRoStockCode">{{ selected_product.stock_code }}</div>
+      <div class="hub-ro-name" id="hubRoName">{{ selected_product.name }}</div>
+      <div class="hub-ro-meta">
+        <span id="hubRoCategoryWrap">{% if selected_product.category and selected_product.category.strip() %}<span id="hubRoCategory">{{ selected_product.category }}</span>{% else %}<span class="badge badge-uncategorised" id="hubRoCategory">Uncategorised</span>{% endif %}</span>
+        <span class="hub-ro-sep">·</span>
+        <span id="hubRoSupplier">{{ selected_product.supplier or "—" }}</span>
+      </div>
+    </div>
+
+    <dl class="hub-ro-grid">
+      <dt>Shopify SKU</dt><dd id="hubRoShopifySku">{{ selected_product.shopify_sku or "—" }}</dd>
+      <dt>Sell price (R)</dt><dd id="hubRoSellPrice">{% if selected_product.sell_price is not none %}{{ selected_product.sell_price }}{% else %}—{% endif %}</dd>
+      <dt>Compare price (R)</dt><dd id="hubRoComparePrice">{% if selected_product.compare_price is not none %}{{ selected_product.compare_price }}{% else %}—{% endif %}</dd>
+      <dt>Status</dt><dd><span class="badge badge-{{ selected_product.status }}" id="hubRoStatusBadge">{{ selected_product.status|upper }}</span></dd>
+      <dt>Shopify</dt><dd id="hubRoShopifyPush">
+        {% if not shopify_configured %}
+        <span class="sub">Not configured</span>
+        {% else %}
+          {% if selected_product.shopify_pushed %}
+          <span class="shopify-dot green"></span> Pushed{% if selected_product.shopify_pushed_at %} — {{ selected_product.shopify_pushed_at }}{% endif %}
+          {% elif selected_product.shopify_id %}
+          <span class="shopify-dot orange"></span> Needs re-push
+          {% else %}
+          <span class="shopify-dot grey"></span> Not pushed
+          {% endif %}
+        {% endif %}
+      </dd>
+    </dl>
+
+    <div class="hub-ro-section">
+      <h3 class="hub-ro-h">Web description</h3>
+      <div class="hub-ro-text" id="hubRoWebDesc">{{ selected_product.web_description or "—" }}</div>
+    </div>
+
+    <div class="hub-ro-section">
+      <h3 class="hub-ro-h">Internal notes</h3>
+      <div class="hub-ro-text" id="hubRoNotes">{{ selected_product.notes or "—" }}</div>
+    </div>
+
+    <div class="hub-ro-section">
+      <h3 class="hub-ro-h">Photos</h3>
+      <div class="hub-ro-photos" id="hubRoPhotoGrid">
+        {% for fn in selected_product.photos %}
+        <img class="hub-ro-thumb" src="{{ url_for('static', filename='uploads/' ~ fn) }}" alt="">
+        {% else %}
+        <span class="sub">No photos yet</span>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if shopify_configured %}
+    <div class="hub-ro-section hub-shopify-actions" id="hubReadonlyShopifyPanel">
+      <button type="button" class="btn btn-blue" id="hubReadonlyPushBtn">{% if selected_product.shopify_pushed %}Re-push{% else %}Push to Shopify{% endif %}</button>
+      <span id="hubReadonlyPushStatus" class="save-status"></span>
+    </div>
+    {% endif %}
+
+    <p class="sub hub-panel-progress">Product {{ panel_position }} of {{ panel_target_total }} — {{ panel_stats.done }} complete ({{ panel_stats.percent }}%)</p>
+  </div>
+
+  <div id="hubPanelEdit" class="product-panel-edit hidden">
+    <p id="hubPanelSaveError" class="save-status error hidden"></p>
+
+    <div class="form-field">
+      <label for="hubEditStockCode">Stock code</label>
+      <input id="hubEditStockCode" type="text" autocomplete="off">
+    </div>
+    <div class="form-field">
+      <label for="hubEditName">Name</label>
+      <input id="hubEditName" type="text" autocomplete="off">
+    </div>
+    <div class="form-field">
+      <label for="hubEditCategorySelect">Category</label>
+      <select id="hubEditCategorySelect">
+        <option value="">Uncategorised</option>
+        {% for c in category_options_sorted %}
+        <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+        <option value="__new__">+ Add new category…</option>
+      </select>
+      <div id="hubEditCategoryNewWrap" class="hidden" style="margin-top:8px;">
+        <input type="text" id="hubEditCategoryNew" placeholder="New category name" autocomplete="off">
+      </div>
+    </div>
+    <div class="form-field">
+      <label for="hubEditSupplier">Supplier</label>
+      <input id="hubEditSupplier" type="text" autocomplete="off">
+    </div>
+    <div class="form-field">
+      <label>Shopify SKU</label>
+      <div class="row-2">
+        <input id="hubEditShopifySku" type="text" readonly>
+        <button type="button" class="btn btn-light" id="hubEditRegenSku">Regenerate</button>
+      </div>
+    </div>
+    <div class="form-field">
+      <label for="hubEditWebDesc">Web description</label>
+      <textarea id="hubEditWebDesc" rows="8"></textarea>
+    </div>
+    <div class="row-2">
+      <div class="form-field"><label for="hubEditSellPrice">Sell price (R)</label><input id="hubEditSellPrice" type="number" step="0.01"></div>
+      <div class="form-field"><label for="hubEditComparePrice">Compare price (R)</label><input id="hubEditComparePrice" type="number" step="0.01"></div>
+    </div>
+    <div class="form-field">
+      <label for="hubEditTags">Tags</label>
+      <input id="hubEditTags" type="text" placeholder="comma-separated">
+    </div>
+    <div class="form-field">
+      <label for="hubEditNotes">Internal notes</label>
+      <textarea id="hubEditNotes" rows="4"></textarea>
+    </div>
+
+    <button type="button" class="status-toggle {% if selected_product.status == 'done' %}done{% else %}pending{% endif %}" id="hubEditStatusToggle">
+      {% if selected_product.status == 'done' %}DONE ✓{% else %}PENDING{% endif %}
+    </button>
+
+    <div class="hub-edit-photos panel">
+      <h3>Photos</h3>
+      <p class="sub">Drag to reorder — first image is main for Shopify</p>
+      <div id="hubEditPhotoGrid" class="photo-grid"></div>
+      <div id="hubEditUploadZone" class="upload-zone">
+        <strong>Drag photos here or click to browse</strong>
+        <div class="sub">JPG, PNG, WEBP</div>
+        <input id="hubEditUploadInput" type="file" accept=".jpg,.jpeg,.png,.webp" multiple hidden>
+      </div>
+      <div id="hubEditUploadError" class="upload-error"></div>
+    </div>
+
+    <div class="hub-edit-actions">
+      <button type="button" class="btn btn-green" id="hubPanelSaveBtn">Save Changes</button>
+      <button type="button" class="btn btn-light" id="hubPanelCancelBtn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script id="hubPanelConfig" type="application/json">
+{
+  "product": {{ selected_product | tojson }},
+  "shopifyConfigured": {{ shopify_configured | tojson }},
+  "categoryNames": {{ category_options_sorted | tojson }}
+}
+</script>

@@ -65,7 +65,8 @@
     <label class="filter-label" for="categoryFilter">Category:</label>
     <select id="categoryFilter">
       <option value="">All Categories</option>
-      {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      <option value="__empty__">Uncategorised</option>
+      {% for c in categories %}<option value="{{ c|lower }}">{{ c }}</option>{% endfor %}
     </select>
   </div>
   <div class="filter-group">
@@ -102,7 +103,8 @@
       <tr class="{% if p.status == 'pending' %}pending-row{% else %}done-row{% endif %} {% if p.shopify_pushed %}pushed-row{% endif %}"
           data-stock="{{ p.stock_code|lower }}"
           data-name="{{ p.name|lower }}"
-          data-category="{{ p.category|lower }}"
+          data-category="{{ (p.category or '')|lower }}"
+          data-uncategorised="{% if p.category and p.category.strip() %}0{% else %}1{% endif %}"
           data-status="{{ p.status }}"
           data-pushed="{{ p.shopify_pushed }}">
         <td>
@@ -116,7 +118,7 @@
         </td>
         <td class="mono strong">{{ p.stock_code }}</td>
         <td>{{ p.name }}</td>
-        <td>{{ p.category }}</td>
+        <td>{% if p.category and p.category.strip() %}{{ p.category }}{% else %}<span class="badge badge-uncategorised">Uncategorised</span>{% endif %}</td>
         <td>{{ p.photo_count }}</td>
         <td><span class="badge badge-{{ p.status }}">{{ p.status|upper }}</span></td>
         <td>
