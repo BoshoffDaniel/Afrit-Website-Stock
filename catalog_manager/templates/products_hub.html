@@ -1,20 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Products - Catalog Manager{% endblock %}
+{% block title %}Catalogue - Catalog Manager{% endblock %}
+{% block hero_inner %}{% endblock %}
 {% block content %}
-<div class="products-hub">
-  <header class="dash-head premium-head">
-    <div>
-      <div class="crumbs">Home / Products / {{ current_catalogue_name }}</div>
-      <div class="dash-brand"><span class="k-accent"></span><h1>Products</h1></div>
-      <p class="sub head-sub">Manage products and categories for this catalogue.</p>
-    </div>
-    <div class="dash-actions">
-      <span class="sync-pill {% if shopify_configured %}ok{% else %}warn{% endif %}">
-        {% if shopify_configured %}Last sync ready{% else %}Sync not configured{% endif %}
-      </span>
-    </div>
-  </header>
-
+{% macro hub_page_url(p) -%}
+{{ url_for(
+  'products_hub',
+  page=p,
+  q=search or none,
+  category=filter_category or none,
+  status=filter_status or none,
+  supplier=filter_supplier or none
+) }}
+{%- endmacro %}
+<div class="products-hub products-hub--catalog-focus products-hub--table">
   <div class="products-hub-tabs" role="tablist">
     <a href="{{ url_for('products_hub', tab='products') }}" class="hub-tab {% if tab == 'products' %}hub-tab--active{% endif %}" role="tab">Products</a>
     <a href="{{ url_for('products_hub', tab='categories') }}" class="hub-tab {% if tab == 'categories' %}hub-tab--active{% endif %}" role="tab">Categories</a>
@@ -25,7 +23,7 @@
     <div class="categories-toolbar">
       <h2 class="section-title-inline">Categories</h2>
       <button type="button" class="btn btn-green js-add-category-btn" id="addCategoryBtn">
-        <span class="admin-lock-inline" aria-hidden="true">🔒</span> + Add Category
+        + Add Category
       </button>
     </div>
     <p class="sub">Rename or delete categories. Deleting is only allowed when no products use that category.</p>
@@ -46,149 +44,230 @@
   </section>
 
   {% else %}
-  <section class="stats-grid bento-grid products-hub-bento">
-    <article class="stat-card blue kpi-card">
-      <div class="kpi-top"><span>Total Products</span><span class="trend up">+2.4%</span></div>
-      <div class="stat-value">{{ stats.total }}</div>
-      <div class="mini-spark"><span style="width:58%"></span></div>
-    </article>
-    <article class="stat-card green kpi-card">
-      <div class="kpi-top"><span>Done</span><span class="trend up">+4.8%</span></div>
-      <div class="stat-value">{{ stats.done }}</div>
-      <div class="mini-spark"><span style="width:{{ stats.percent }}%"></span></div>
-    </article>
-    <article class="stat-card orange kpi-card">
-      <div class="kpi-top"><span>Pending</span><span class="trend flat">-0.8%</span></div>
-      <div class="stat-value">{{ stats.pending }}</div>
-      <div class="mini-spark"><span style="width:{% if stats.total %}{{ (stats.pending / stats.total * 100)|round(0)|int }}{% else %}0{% endif %}%"></span></div>
-    </article>
-    <article class="stat-card purple kpi-card">
-      <div class="kpi-top"><span>% Complete</span><span class="trend up">Goal</span></div>
-      <div class="stat-value">{{ stats.percent }}%</div>
-      <div class="mini-spark"><span style="width:{{ stats.percent }}%"></span></div>
-    </article>
-  </section>
+  <div class="shop-catalog">
+    <aside class="shop-filters" aria-label="Catalogue filters">
+      <h2 class="shop-filters-title">Filters</h2>
 
-  <section class="progress-wrap products-hub-progress">
-    <div class="progress-meta">{{ stats.done }} of {{ target_total }} products complete</div>
-    <div class="progress-bar"><div class="progress-fill" style="width: {{ stats.percent }}%"></div></div>
-  </section>
+      <form id="hubFilterForm" method="get" action="{{ url_for('products_hub') }}" class="hub-filter-form">
+        <div class="shop-filter-block">
+          <h3 class="shop-filter-heading">Search</h3>
+          <input
+            type="search"
+            id="hubSearchInput"
+            name="q"
+            class="shop-search"
+            value="{{ search or '' }}"
+            placeholder="Search by name, stock code or description…"
+            autocomplete="off"
+          >
+        </div>
 
-  <section class="shopify-bar {% if shopify_configured %}ok{% else %}warn{% endif %} products-hub-shopify">
-    {% if shopify_configured %}
-      Shopify connected — {{ stats.pushed }} pushed, {{ ready_to_push }} ready to push
-    {% else %}
-      Shopify not connected — add API key in Settings
-    {% endif %}
-  </section>
-
-  <div class="products-split">
-    <aside class="products-list-panel">
-      <div class="products-list-toolbar">
-        <a href="{{ url_for('products_hub', new='1') }}" class="btn btn-green btn-block js-admin-add-product">
-          <span class="admin-lock-inline" aria-hidden="true">🔒</span> + Add Product
-        </a>
-      </div>
-      <div class="products-list-filters">
-        <input type="text" id="hubSearchInput" class="hub-search" placeholder="Search stock code, name, category…" autocomplete="off">
-        <div class="filter-group filter-group--stack">
-          <label class="filter-label" for="hubCategoryFilter">Category</label>
-          <select id="hubCategoryFilter">
-            <option value="">All</option>
-            <option value="__empty__">Uncategorised</option>
-            {% for c in category_options %}<option value="{{ c|lower }}">{{ c }}</option>{% endfor %}
+        <div class="shop-filter-block">
+          <h3 class="shop-filter-heading">Category</h3>
+          <select id="hubCategoryFilter" name="category" class="shop-filter-select" aria-label="Filter by category">
+            <option value="" {% if not filter_category %}selected{% endif %}>All ({{ products_total }})</option>
+            <option value="__empty__" {% if filter_category == '__empty__' %}selected{% endif %}>Uncategorised ({{ uncategorised_count }})</option>
+            {% for c in categories_full %}
+            <option value="{{ c.name|lower }}" {% if filter_category == (c.name|lower) %}selected{% endif %}>{{ c.name }} ({{ c.product_count }})</option>
+            {% endfor %}
           </select>
         </div>
-        <div class="filter-group filter-group--stack">
-          <label class="filter-label" for="hubStatusFilter">Status</label>
-          <select id="hubStatusFilter">
-            <option value="">All</option>
-            <option value="pending">Pending</option>
-            <option value="done">Done</option>
-            <option value="pushed">Pushed</option>
+
+        <div class="shop-filter-block">
+          <h3 class="shop-filter-heading">Supplier</h3>
+          <select id="hubSupplierFilter" name="supplier" class="shop-filter-select" aria-label="Filter by supplier">
+            <option value="" {% if not filter_supplier %}selected{% endif %}>All ({{ products_total }})</option>
+            <option value="__empty__" {% if filter_supplier == '__empty__' %}selected{% endif %}>No supplier ({{ supplier_empty_count }})</option>
+            {% for s in suppliers_full %}
+            <option value="{{ s.name|lower }}" {% if filter_supplier == (s.name|lower) %}selected{% endif %}>{{ s.name }} ({{ s.product_count }})</option>
+            {% endfor %}
           </select>
         </div>
-      </div>
-      <ul class="products-list" id="hubProductList">
-        {% for p in products %}
-        <li class="products-list-item {% if selected_id == p.id %}products-list-item--active{% endif %}"
-            data-id="{{ p.id }}"
-            data-stock="{{ p.stock_code|lower }}"
-            data-name="{{ p.name|lower }}"
-            data-category="{{ (p.category or '')|lower }}"
-            data-uncategorised="{% if p.category and p.category.strip() %}0{% else %}1{% endif %}"
-            data-status="{{ p.status }}"
-            data-pushed="{{ p.shopify_pushed }}">
-          <a class="products-list-link" href="{{ url_for('products_hub', selected=p.id) }}">
-            <span class="products-list-thumb">
-              {% if p.photos and p.photos|length > 0 %}
-              <img src="{{ url_for('static', filename='uploads/' ~ p.photos[0]) }}" alt="">
-              {% else %}
-              <span class="dash-thumb placeholder">📷</span>
-              {% endif %}
-            </span>
-            <span class="products-list-body">
-              <span class="mono products-list-code">{{ p.stock_code }}</span>
-              <span class="products-list-name">{{ p.name }}</span>
-              <span class="products-list-badges">
-                {% if p.category and p.category.strip() %}
-                <span class="products-list-cat">{{ p.category }}</span>
-                {% else %}
-                <span class="badge badge-uncategorised">Uncategorised</span>
-                {% endif %}
-                <span class="badge badge-{{ p.status }}">{{ p.status|upper }}</span>
-              </span>
-              <span class="products-list-edit-hint">Edit</span>
-            </span>
-          </a>
-        </li>
-        {% else %}
-        <li class="sub products-list-empty">No products yet. Use <strong>+ Add Product</strong> or import from Manage Catalogues.</li>
-        {% endfor %}
-      </ul>
+
+        <div class="shop-filter-block">
+          <h3 class="shop-filter-heading">Status</h3>
+          <select id="hubStatusFilter" name="status" class="shop-filter-select" aria-label="Filter by status">
+            <option value="" {% if not filter_status %}selected{% endif %}>All ({{ products_total }})</option>
+            <option value="pending" {% if filter_status == 'pending' %}selected{% endif %}>Pending ({{ status_counts.pending }})</option>
+            <option value="revise" {% if filter_status == 'revise' %}selected{% endif %}>Revise ({{ status_counts.revise }})</option>
+            <option value="done" {% if filter_status == 'done' %}selected{% endif %}>Done — awaiting approval ({{ status_counts.done }})</option>
+            <option value="approved" {% if filter_status == 'approved' %}selected{% endif %}>Approved ({{ status_counts.approved }})</option>
+            <option value="pushed" {% if filter_status == 'pushed' %}selected{% endif %}>Pushed ({{ status_counts.pushed }})</option>
+          </select>
+        </div>
+
+        <div class="shop-filter-actions">
+          <button type="submit" class="btn btn-blue shop-action-btn">Apply filters</button>
+          {% if filters_active %}
+          <a href="{{ url_for('products_hub') }}" class="btn btn-light shop-action-btn">Clear filters</a>
+          {% endif %}
+          <a href="{{ url_for('products_hub', new='1') }}" class="btn btn-green js-admin-add-product shop-action-btn">+ Add Product</a>
+        </div>
+      </form>
     </aside>
 
-    <div class="products-detail-panel">
+    <section class="shop-main shop-main--table">
+      <div class="shop-toolbar">
+        <p class="shop-result-count" id="hubListHint">
+          {% if filtered_total %}
+          Showing {{ page_start }}–{{ page_end }} of {{ filtered_total }} products
+          {% else %}
+          Showing 0 of 0 products
+          {% endif %}
+          <span class="is-muted">({{ status_counts.pending }} pending, {{ status_counts.revise }} revise, {{ status_counts.done }} done, {{ status_counts.approved }} approved, {{ status_counts.pushed }} pushed in catalogue)</span>
+        </p>
+      </div>
+
       {% if is_new %}
       <div class="panel products-new-panel" id="newProductPanel">
-        <h2><span class="admin-lock-inline" aria-hidden="true">🔒</span> New product</h2>
-        <p class="sub">Stock code and name are required. New category names are saved when you create the product.</p>
-        <div class="form-field">
-          <label for="new_stock_code">Stock code</label>
-          <input id="new_stock_code" type="text" autocomplete="off">
-        </div>
-        <div class="form-field">
-          <label for="new_name">Name</label>
-          <input id="new_name" type="text" autocomplete="off">
-        </div>
-        <div class="form-field">
-          <label for="new_category">Category</label>
-          <input id="new_category" type="text" list="hubCategoryDatalist" placeholder="Type or pick existing" autocomplete="off">
-          <datalist id="hubCategoryDatalist">
-            {% for c in category_options %}<option value="{{ c }}">{% endfor %}
-          </datalist>
+        <h2>New product</h2>
+        <p class="sub">Stock code and name are required. After create you open the full product page.</p>
+        <div class="products-new-grid">
+          <div class="form-field">
+            <label for="new_stock_code">Stock code</label>
+            <input id="new_stock_code" type="text" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="new_name">Name</label>
+            <input id="new_name" type="text" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="new_category">Category</label>
+            <input id="new_category" type="text" list="hubCategoryDatalist" placeholder="Type or pick existing" autocomplete="off">
+            <datalist id="hubCategoryDatalist">
+              {% for c in category_options %}<option value="{{ c }}">{% endfor %}
+            </datalist>
+          </div>
+          <div class="form-field">
+            <label for="new_supplier">Supplier</label>
+            <input id="new_supplier" type="text" list="hubNewSupplierDatalist" placeholder="Type or select" autocomplete="off">
+            <datalist id="hubNewSupplierDatalist">
+              {% for s in supplier_options or [] %}<option value="{{ s.label or s.name }}">{% endfor %}
+            </datalist>
+          </div>
         </div>
         <p id="newProductError" class="save-status error"></p>
-        <button type="button" class="btn btn-green btn-block" id="createProductSubmitBtn">Create product</button>
-      </div>
-      {% elif selected_product %}
-      {% include "_product_hub_detail.html" %}
-      {% else %}
-      <div class="products-detail-empty panel">
-        <h3>Select a product</h3>
-        <p class="sub">Choose a product from the list on the left. To add a product, use <strong>+ Add Product</strong> above the list.</p>
+        <button type="button" class="btn btn-green" id="createProductSubmitBtn">Create product</button>
+        <a class="btn btn-light" href="{{ url_for('products_hub') }}">Cancel</a>
       </div>
       {% endif %}
-    </div>
+
+      <div class="table-wrap premium-table-wrap hub-table-wrap">
+        {% if hub_list_products|length == 0 %}
+        <div class="empty-state">
+          {% if filters_active %}
+          <h3>No products match your search</h3>
+          <p class="sub">Try different keywords or <a href="{{ url_for('products_hub') }}">clear filters</a>.</p>
+          {% else %}
+          <h3>No products yet</h3>
+          <p class="sub">Use <strong>+ Add Product</strong> or import from Manage Catalogues.</p>
+          {% endif %}
+        </div>
+        {% else %}
+        <table id="hubProductsTable">
+          <thead>
+            <tr>
+              <th class="hub-col-photo">Photo</th>
+              <th class="hub-sortable" data-sort="stock_code" scope="col">Stock Code <span class="sort-indicator" aria-hidden="true"></span></th>
+              <th class="hub-sortable" data-sort="name" scope="col">Name <span class="sort-indicator" aria-hidden="true"></span></th>
+              <th class="hub-sortable" data-sort="category" scope="col">Category <span class="sort-indicator" aria-hidden="true"></span></th>
+              <th class="hub-sortable" data-sort="supplier" scope="col">Supplier <span class="sort-indicator" aria-hidden="true"></span></th>
+              <th class="hub-sortable hub-col-num" data-sort="photo_count" scope="col">Photos <span class="sort-indicator" aria-hidden="true"></span></th>
+              <th class="hub-sortable" data-sort="status" scope="col">Status <span class="sort-indicator" aria-hidden="true"></span></th>
+              <th class="hub-col-shopify">Shopify</th>
+              <th class="hub-sortable" data-sort="last_edited_by" scope="col">Edited By <span class="sort-indicator" aria-hidden="true"></span></th>
+              <th class="hub-col-open">Open</th>
+            </tr>
+          </thead>
+          <tbody id="hubProductsTbody"
+                 data-products-total="{{ filtered_total }}">
+            {% for p in hub_list_products %}
+            <tr class="{% if p.status == 'pending' %}pending-row{% elif p.status == 'revise' %}revise-row{% elif p.status == 'done' %}ready-row{% else %}done-row{% endif %}{% if p.shopify_pushed %} pushed-row{% endif %}"
+                data-id="{{ p.id }}"
+                data-stock="{{ p.stock_code|lower }}"
+                data-name="{{ p.name|lower }}"
+                data-category="{{ (p.category or '')|lower }}"
+                data-supplier="{{ (p.supplier or '')|lower }}"
+                data-uncategorised="{% if p.category and p.category.strip() %}0{% else %}1{% endif %}"
+                data-status="{{ p.status }}"
+                data-pushed="{{ p.shopify_pushed }}"
+                data-photo-count="{{ p.photo_count }}"
+                data-edited-by="{{ (p.last_edited_by or '')|lower }}">
+              <td>
+                <a href="{{ url_for('product_page', product_id=p.id) }}" class="dash-thumb-link">
+                  {% if p.thumb %}
+                  <img class="dash-thumb" src="{{ url_for('static', filename='uploads/' ~ p.thumb) }}" alt="" loading="lazy" decoding="async">
+                  {% else %}
+                  <div class="dash-thumb placeholder">📷</div>
+                  {% endif %}
+                </a>
+              </td>
+              <td class="mono strong">{{ p.stock_code }}</td>
+              <td class="hub-col-name">{{ p.name }}</td>
+              <td>{% if p.category and p.category.strip() %}{{ p.category }}{% else %}<span class="badge badge-uncategorised">Uncategorised</span>{% endif %}</td>
+              <td class="hub-col-supplier" title="{{ p.supplier or '' }}">{% if p.supplier and p.supplier.strip() %}{{ p.supplier }}{% else %}<span class="is-muted">—</span>{% endif %}</td>
+              <td class="hub-col-num">{{ p.photo_count }}</td>
+              <td><span class="badge badge-{{ p.status }}">{% if p.status == 'approved' %}APPROVED{% elif p.status == 'done' %}DONE{% else %}{{ p.status|upper }}{% endif %}</span></td>
+              <td>
+                {% if p.shopify_pushed %}<span class="shopify-dot green" title="Pushed to Shopify"></span>
+                {% elif p.shopify_id %}<span class="shopify-dot orange" title="Linked on Shopify"></span>
+                {% else %}<span class="shopify-dot grey" title="Not on Shopify"></span>{% endif %}
+              </td>
+              <td class="hub-col-edited">{% if p.last_edited_by and p.last_edited_by.strip() %}{{ p.last_edited_by }}{% else %}<span class="is-muted">—</span>{% endif %}</td>
+              <td><a class="btn btn-small btn-green open-btn" href="{{ url_for('product_page', product_id=p.id) }}">Open</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        {% if total_pages > 1 or filtered_total > 0 %}
+        <nav class="hub-pagination" aria-label="Catalogue pages">
+          <div class="hub-pagination__info">
+            Page {{ page }} of {{ total_pages }}
+          </div>
+          <div class="hub-pagination__controls">
+            {% if page > 1 %}
+            <a class="hub-page-btn" href="{{ hub_page_url(page - 1) }}">Previous</a>
+            {% else %}
+            <span class="hub-page-btn is-disabled" aria-disabled="true">Previous</span>
+            {% endif %}
+
+            {% set window = 2 %}
+            {% set start_p = page - window if page - window > 1 else 1 %}
+            {% set end_p = page + window if page + window < total_pages else total_pages %}
+            {% if start_p > 1 %}
+            <a class="hub-page-num" href="{{ hub_page_url(1) }}">1</a>
+            {% if start_p > 2 %}<span class="hub-page-ellipsis">…</span>{% endif %}
+            {% endif %}
+            {% for p in range(start_p, end_p + 1) %}
+              {% if p == page %}
+              <span class="hub-page-num is-current" aria-current="page">{{ p }}</span>
+              {% else %}
+              <a class="hub-page-num" href="{{ hub_page_url(p) }}">{{ p }}</a>
+              {% endif %}
+            {% endfor %}
+            {% if end_p < total_pages %}
+            {% if end_p < total_pages - 1 %}<span class="hub-page-ellipsis">…</span>{% endif %}
+            <a class="hub-page-num" href="{{ hub_page_url(total_pages) }}">{{ total_pages }}</a>
+            {% endif %}
+
+            {% if page < total_pages %}
+            <a class="hub-page-btn" href="{{ hub_page_url(page + 1) }}">Next</a>
+            {% else %}
+            <span class="hub-page-btn is-disabled" aria-disabled="true">Next</span>
+            {% endif %}
+          </div>
+        </nav>
+        {% endif %}
+        {% endif %}
+      </div>
+    </section>
   </div>
   {% endif %}
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-  initProductsHub({ tab: {{ tab|tojson }}, isNew: {{ is_new|tojson }} });
-  {% if selected_product %}
-  initProductHubPanel();
-  {% endif %}
+  initProductsHub({ tab: {{ tab|tojson }}, isNew: {{ is_new|tojson }}, serverPaged: true });
 </script>
 {% endblock %}

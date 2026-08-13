@@ -4,79 +4,199 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Catalog Manager{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260512hub') }}">
+  {% if application_prefix %}<base href="{{ cm_base_href }}">{% endif %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='afrit-design-system.css', v='20260721cmfix3') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='cm-portal-shell.css', v='20260730ui1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260813ret1') }}">
 </head>
-<body>
-  <div class="app-shell">
-    <aside class="app-sidebar">
-      <a class="sidebar-brand" href="{{ url_for('index') }}">
-        <span class="brand-dot"></span>
-        <span>Catalog Manager</span>
-      </a>
-      <nav class="sidebar-nav">
-        <a class="sidebar-item {% if request.path == '/' %}active{% endif %}" href="{{ url_for('index') }}"><span class="ico"></span>Dashboard</a>
-        <a class="sidebar-item {% if request.path.startswith('/catalogues') %}active{% endif %}" href="{{ url_for('catalogues_page') }}"><span class="ico"></span>Manage Catalogues</a>
-        <a class="sidebar-item {% if request.path.startswith('/products') or request.path.startswith('/product') %}active{% endif %}" href="{{ url_for('products_hub') }}"><span class="ico"></span>Products</a>
-        <a class="sidebar-item {% if request.path.startswith('/activity') %}active{% endif %}" href="{{ url_for('activity_page') }}"><span class="ico"></span>Activity</a>
-        <a class="sidebar-item {% if request.path.startswith('/settings') %}active{% endif %}" href="{{ url_for('settings_page') }}"><span class="ico"></span>Settings</a>
-      </nav>
-    </aside>
+<body class="cm-portal-layout"{% if cm_idle_logout %} data-cm-idle-logout="1" data-cm-idle-ms="{{ cm_idle_timeout_ms }}"{% endif %}>
+  <a class="afrit-skip" href="#CmMainContent">Skip to content</a>
 
-    <div class="app-main">
-      <header class="top-nav modern-top-nav">
-        <div class="top-left">
-          {% if request.path.startswith('/product/') %}
-            <button
-              type="button"
-              class="btn btn-blue"
-              onclick="if (window.history.length > 1) { window.history.back(); } else { window.location.href = '/'; }"
-            >
-              ← Back
-            </button>
-          {% endif %}
-          <div class="global-search">Search products, actions, pages…</div>
-        </div>
-        <nav class="top-links">
-          <form method="post" action="{{ url_for('switch_catalogue') }}" class="catalogue-switch-form">
-            <label for="catalogue_id" class="top-filter-label">Catalogue:</label>
-            <select id="catalogue_id" name="catalogue_id" onchange="this.form.submit()">
+  <header class="afrit-header" data-afrit-header>
+    <div class="afrit-header__inner">
+      <div class="afrit-header__brand">
+        <a class="afrit-header__logo cm-header-brand-link" href="{{ url_for('index') }}">
+          <img
+            class="cm-header-logo-main"
+            src="https://afrit.co.za/wp-content/uploads/2025/04/Afrit-Logo-without-slogan_White.svg"
+            width="198"
+            height="105"
+            alt="Afrit Spares"
+            loading="eager" />
+          <span class="cm-header-product-label">CATALOG MANAGER</span>
+        </a>
+      </div>
+      <div class="afrit-header__center">
+        <nav class="afrit-header__nav-desktop" aria-label="Catalog Manager">
+          <ul class="afrit-header__menu">
+            <li class="{% if cm_is_dashboard %}is-active{% endif %}">
+              <a href="{{ url_for('index') }}"><span class="afrit-header__menu-text">Dashboard</span></a>
+            </li>
+            <li class="{% if request.path.startswith('/products') or request.path.startswith('/product') %}is-active{% endif %}">
+              <a href="{{ url_for('products_hub') }}"><span class="afrit-header__menu-text">Catalogue</span></a>
+            </li>
+            <li class="{% if request.path.startswith('/activity') %}is-active{% endif %}">
+              <a href="{{ url_for('activity_page') }}"><span class="afrit-header__menu-text">Activity</span></a>
+            </li>
+            {% if cm_can_manage_settings %}
+            <li class="{% if request.path.startswith('/settings') or request.path.startswith('/catalogues') %}is-active{% endif %}">
+              <a href="{{ url_for('settings_page') }}"><span class="afrit-header__menu-text">Settings</span></a>
+            </li>
+            {% endif %}
+          </ul>
+        </nav>
+        <div class="afrit-header__actions">
+          {% if not cm_is_dashboard %}
+          <form method="post" action="{{ url_for('switch_catalogue') }}" class="cm-header-catalogue-form">
+            <select id="catalogue_id" name="catalogue_id" aria-label="Catalogue" onchange="this.form.submit()">
               {% for c in available_catalogues %}
                 <option value="{{ c.id }}" {% if c.id == current_catalogue_id %}selected{% endif %}>{{ c.name }}</option>
               {% endfor %}
             </select>
           </form>
-          <a class="btn btn-light" href="{{ url_for('settings_page') }}"><span class="admin-lock-inline" aria-hidden="true">🔒</span> Settings</a>
-          <button class="btn btn-green" type="button" id="pushAllBtn" {% if not shopify_configured %}disabled{% endif %}>Push all done products</button>
-          <a class="btn btn-light" href="{{ url_for('help_page') }}">Help</a>
-          <button class="btn btn-light" type="button">Notifications</button>
-          <button class="btn btn-light" type="button">Profile</button>
-        </nav>
-      </header>
-      <main class="page">
-        <section id="batchPushProgress" class="progress-wrap hidden global-batch-push">
-          <div class="progress-bar"><div class="progress-fill" id="batchPushBar" style="width:0%"></div></div>
-          <small id="batchPushText"></small>
-        </section>
-        {% block content %}{% endblock %}
-      </main>
-    </div>
-  </div>
-
-  <div id="adminModal" class="admin-modal hidden" aria-hidden="true">
-    <div class="admin-modal-backdrop"></div>
-    <div class="admin-modal-box" role="dialog" aria-labelledby="adminModalTitle">
-      <h2 id="adminModalTitle">Administrator access required</h2>
-      <p class="sub">Enter the administrator password to continue.</p>
-      <input type="password" id="adminModalPassword" class="admin-modal-input" placeholder="Password" autocomplete="current-password">
-      <p id="adminModalError" class="save-status error hidden"></p>
-      <div class="admin-modal-actions">
-        <button type="button" class="btn btn-light" id="adminModalCancel">Cancel</button>
-        <button type="button" class="btn btn-green" id="adminModalUnlock">Unlock</button>
+          {% endif %}
+          {% if ldap_enabled and cm_username %}
+          <span class="cm-header-btn" style="pointer-events:none;opacity:.9;" title="Signed in">{{ cm_display_name or cm_username }} · {{ cm_role }}</span>
+          <a class="cm-header-btn" href="{{ url_for('cm_logout') }}">Sign out</a>
+          {% endif %}
+          <a class="cm-header-btn" href="{{ url_for('help_page') }}">Help</a>
+          {% if cm_can_approve %}
+          <button class="cm-header-btn cm-header-btn--primary" type="button" id="pushAllBtn" {% if not shopify_configured %}disabled{% endif %}>Push all done</button>
+          {% endif %}
+          <button type="button" class="afrit-nav-toggle" data-cm-nav-open aria-expanded="false" aria-controls="CmMobileDrawer">
+            <span class="afrit-util-visually-hidden">Menu</span>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="30" height="30" aria-hidden="true"><path fill="currentColor" d="M104 333H896C929 333 958 304 958 271S929 208 896 208H104C71 208 42 237 42 271S71 333 104 333ZM104 583H896C929 583 958 554 958 521S929 458 896 458H104C71 458 42 487 42 521S71 583 104 583ZM104 833H896C929 833 958 804 958 771S929 708 896 708H104C71 708 42 737 42 771S71 833 104 833Z"></path></svg>
+          </button>
+        </div>
       </div>
     </div>
+  </header>
+
+  <div class="afrit-mobile-drawer" id="CmMobileDrawer" data-cm-drawer>
+    <div class="afrit-mobile-drawer__backdrop" data-cm-drawer-close tabindex="-1"></div>
+    <div class="afrit-mobile-drawer__panel" role="dialog" aria-modal="true" aria-label="Menu">
+      <div class="afrit-mobile-drawer__bar">
+        <button type="button" class="afrit-btn afrit-btn--ghost" data-cm-drawer-close>Close</button>
+      </div>
+      <nav aria-label="Mobile">
+        <ul class="cm-mobile-drawer__nav">
+          <li><a href="{{ url_for('index') }}">Dashboard</a></li>
+          <li><a href="{{ url_for('products_hub') }}">Catalogue</a></li>
+          <li><a href="{{ url_for('activity_page') }}">Activity</a></li>
+          {% if cm_can_manage_settings %}
+          <li><a href="{{ url_for('settings_page') }}">Settings</a></li>
+          <li><a href="{{ url_for('catalogues_page') }}">Catalogues management</a></li>
+          {% endif %}
+          <li><a href="{{ url_for('help_page') }}">Help</a></li>
+          {% if ldap_enabled %}
+          <li><a href="{{ url_for('cm_logout') }}">Sign out ({{ cm_username }})</a></li>
+          {% endif %}
+        </ul>
+      </nav>
+    </div>
   </div>
 
-  <script src="{{ url_for('static', filename='app.js', v='20260512hub') }}"></script>
+  <div class="cm-portal-main">
+    {% block hero %}
+    {% if cm_is_dashboard %}
+    <section class="cm-spares-hero cm-spares-hero--home" aria-label="Page header">
+      <div class="cm-spares-hero__overlay" aria-hidden="true"></div>
+      <div class="cm-spares-hero__inner cm-spares-hero__inner--home">
+        {% block hero_inner %}
+        <div class="cm-spares-hero__main">
+          <h1 class="cm-spares-hero__title">{% block hero_title %}BUILT FOR MORE{% endblock %}</h1>
+          <p class="cm-spares-hero__tagline">{% block hero_tagline %}Unrivalled reliability, performance and payload{% endblock %}</p>
+        </div>
+        {% endblock %}
+      </div>
+    </section>
+    {% endif %}
+    {% endblock %}
+
+    <main id="CmMainContent" class="page cm-page-body">
+      {% if request.path.startswith('/product/') %}
+        <p class="cm-product-back">
+          <button
+            type="button"
+            class="btn btn-blue"
+            id="cmProductBackBtn"
+          >
+            ← Back to Catalogue
+          </button>
+        </p>
+        <script>
+          (function () {
+            var btn = document.getElementById("cmProductBackBtn");
+            if (!btn) return;
+            function goBack() {
+              try {
+                var pidMatch = location.pathname.match(/\/product\/(\d+)/);
+                var pid = pidMatch ? pidMatch[1] : null;
+                if (typeof window.buildCatalogueReturnUrl === "function") {
+                  window.location.href = window.buildCatalogueReturnUrl(pid);
+                  return;
+                }
+                var raw = sessionStorage.getItem("cmCatalogueReturn");
+                if (raw) {
+                  var ctx = JSON.parse(raw);
+                  var params = new URLSearchParams();
+                  var page = parseInt(ctx.page, 10);
+                  if (page >= 1) params.set("page", String(page));
+                  var highlight = pid || ctx.productId || "";
+                  if (highlight) params.set("highlight", String(highlight));
+                  if (ctx.category) params.set("category", ctx.category);
+                  if (ctx.status) params.set("status", ctx.status);
+                  if (ctx.supplier) params.set("supplier", ctx.supplier);
+                  if (ctx.q) params.set("q", ctx.q);
+                  var qs = params.toString();
+                  var dest = "/products" + (qs ? "?" + qs : "");
+                  window.location.href = typeof window.cmPath === "function" ? window.cmPath(dest) : dest;
+                  return;
+                }
+              } catch (e) {}
+              if (window.history.length > 1) window.history.back();
+              else window.location.href = typeof window.cmPath === "function" ? window.cmPath("/products") : "/products";
+            }
+            btn.addEventListener("click", function () {
+              var leave = typeof window.cmProductBeforeLeave === "function"
+                ? window.cmProductBeforeLeave()
+                : Promise.resolve(true);
+              Promise.resolve(leave).then(function (ok) {
+                if (ok === false) return;
+                goBack();
+              });
+            });
+          })();
+        </script>
+      {% endif %}
+      <section id="batchPushProgress" class="progress-wrap hidden global-batch-push">
+        <div class="progress-bar"><div class="progress-fill" id="batchPushBar" style="width:0%"></div></div>
+        <small id="batchPushText"></small>
+      </section>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  {% if cm_is_dashboard %}
+  <footer class="afrit-footer sim-footer-sim cm-site-footer cm-site-footer--dashboard">
+    <div class="sim-footer-inner">
+      <a class="afrit-footer__logo" href="{{ url_for('index') }}">
+        <img
+          src="https://afrit.co.za/wp-content/uploads/2025/04/Afrit-Logo-without-slogan_White.svg"
+          alt="Afrit Trailers"
+          width="120"
+          height="64"
+          loading="lazy" />
+        <span class="cm-footer-product-label">CATALOG MANAGER</span>
+      </a>
+      <p class="sim-footer-copy">&copy; 2025 Afrit Trailers. All rights reserved.</p>
+    </div>
+  </footer>
+  {% endif %}
+
+  <script src="{{ url_for('static', filename='cm-shell.js', v='20260730idle1') }}"></script>
+  <script src="{{ url_for('static', filename='cm-path.js', v='20260727standalone1') }}"{% if application_prefix %} data-root="{{ cm_base_href }}"{% endif %}></script>
+  <script src="{{ url_for('static', filename='app.js', v='20260813ret1') }}"></script>
   <script>
     document.addEventListener("DOMContentLoaded", function () {
       if (window.initHeaderPushAll) window.initHeaderPushAll();

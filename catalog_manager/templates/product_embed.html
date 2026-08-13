@@ -4,12 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ product.stock_code }} - Catalog Manager</title>
+  {% if application_prefix %}<base href="{{ cm_base_href }}">{% endif %}
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20260512hub') }}">
 </head>
 <body class="product-embed-root">
 {% include "_product_body.html" %}
 <script>window.PRODUCT_ID = {{ product.id }};</script>
-<script src="{{ url_for('static', filename='app.js', v='20260512hub') }}"></script>
+<script src="{{ url_for('static', filename='cm-path.js', v='20260727standalone1') }}"{% if application_prefix %} data-root="{{ cm_base_href }}"{% endif %}></script>
+<script src="{{ url_for('static', filename='photo-mask-editor.js', v='20260803img2') }}"></script>
+<script src="{{ url_for('static', filename='app.js', v='20260813ret1') }}"></script>
 <script>initProductPage();</script>
 </body>
 </html>
